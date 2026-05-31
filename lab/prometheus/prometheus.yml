@@ -1,0 +1,35 @@
+# глобальный конфиг для всех job'ов
+global:
+  scrape_interval: 15s # как часто снимать метрики с targets
+  evaluation_interval: 15s # как часто пересчитывать rules/alerts
+
+# конфиг для alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+# конфиг для правил
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+# конфиг для scrape
+scrape_configs:
+  - job_name: prometheus # job для самого prometheus
+    static_configs: # список targets для самого prometheus
+      - targets: ["localhost:9090"]
+
+# metrics_path default /metrics
+# scheme default http
+# params default {}
+# relabel_configs default []
+# metric_relabel_configs default []
+# scrape_timeout default 10s
+# scrape_samples_limit default 500
+  - job_name: lab-host-node # job для node_exporter
+    scrape_interval: 5s # как часто снимать метрики с targets
+    static_configs:
+      - targets: ["lab-host:9100"]
+        labels:
+          env: demo
+          service: lab-host

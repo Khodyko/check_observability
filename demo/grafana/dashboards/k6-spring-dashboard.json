@@ -1,0 +1,172 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "k6_vus{testid=\"$testid\"}",
+          "legendFormat": "k6 VUs",
+          "refId": "A"
+        }
+      ],
+      "title": "Virtual Users (k6)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "sum(rate(k6_http_reqs_total{testid=\"$testid\"}[1m]))",
+          "legendFormat": "k6 client RPS",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"k6-test-app\"}[1m]))",
+          "legendFormat": "Spring server RPS",
+          "refId": "B"
+        }
+      ],
+      "title": "Requests per second",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "k6 client p95" },
+            "properties": [{ "id": "unit", "value": "ms" }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "k6_http_req_duration_p99{testid=\"$testid\"}",
+          "legendFormat": "k6 client p99",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"k6-test-app\"}[1m])) by (le))",
+          "legendFormat": "Spring server p95",
+          "refId": "B"
+        }
+      ],
+      "title": "Latency p99 / p95 (client vs server)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "k6_http_req_failed_rate{testid=\"$testid\"}",
+          "legendFormat": "k6 failed rate",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"k6-test-app\", status=~\"5..\"}[1m])) / clamp_min(sum(rate(http_server_requests_seconds_count{job=\"k6-test-app\"}[1m])), 0.001)",
+          "legendFormat": "Spring 5xx ratio",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus-demo" },
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"k6-test-app\", status=~\"4..\"}[1m])) / clamp_min(sum(rate(http_server_requests_seconds_count{job=\"k6-test-app\"}[1m])), 0.001)",
+          "legendFormat": "Spring 4xx ratio",
+          "refId": "C"
+        }
+      ],
+      "title": "Error rate",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["k6", "spring", "demo"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "all-endpoints-200", "value": "all-endpoints-200" },
+        "hide": 0,
+        "label": "testid",
+        "name": "testid",
+        "options": [
+          { "selected": true, "text": "all-endpoints-200", "value": "all-endpoints-200" },
+          { "selected": false, "text": "with-errors", "value": "with-errors" },
+          { "selected": false, "text": "lecture1-demo", "value": "lecture1-demo" }
+        ],
+        "query": "all-endpoints-200,with-errors,lecture1-demo",
+        "type": "custom"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "browser",
+  "title": "k6 + Spring Boot (demo)",
+  "uid": "k6-spring-demo",
+  "version": 1
+}

@@ -1,0 +1,54 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: observability-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    networks:
+      - observability-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: observability-alertmanager
+    ports:
+      - "9093:9093"
+    env_file:
+      - .env
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml.template:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sed -e "s|__TELEGRAM_BOT_TOKEN__|$${TELEGRAM_BOT_TOKEN}|g" \
+            -e "s|__TELEGRAM_CHAT_ID__|$${TELEGRAM_CHAT_ID}|g" \
+            /etc/alertmanager/alertmanager.yml.template > /tmp/alertmanager.yml &&
+        exec /bin/alertmanager --config.file=/tmp/alertmanager.yml
+    networks:
+      - observability-net
+
+  lab-host:
+    build:
+      context: ./ubuntu-host
+    container_name: observability-lab-host
+    ports:
+      - "9100:9100"
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - observability-net
+
+networks:
+  observability-net:
+    name: observability-net
+
+volumes:
+  prometheus-data:

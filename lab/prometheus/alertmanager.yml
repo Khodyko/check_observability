@@ -1,0 +1,19 @@
+# глобальный конфиг для всех receivers
+global:
+  resolve_timeout: 5m
+
+# конфиг для маршрутизации
+route:
+  receiver: telegram # receiver для telegram
+  group_by: ["alertname", "job"] # группировка по alertname и job
+  group_wait: 10s # как долго ждать перед группировкой
+  group_interval: 30s # как часто группировать алерты
+  repeat_interval: 1h # как часто повторять алерты
+
+receivers:
+  - name: telegram # receiver для telegram
+    telegram_configs:
+      - bot_token: '__TELEGRAM_BOT_TOKEN__'
+        chat_id: __TELEGRAM_CHAT_ID__ # chat_id для telegram
+        send_resolved: true # отправлять resolved сообщения
+        parse_mode: HTML # формат сообщения

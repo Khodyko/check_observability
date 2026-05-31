@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: k6-test-app
+    scrape_interval: 10s
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # k6-test-app на хосте: ./mvnw spring-boot:run в demo/app
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          env: demo
+          service: k6-test-app

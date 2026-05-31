@@ -1,0 +1,1310 @@
+# Доклад: Observability — полный спич
+
+| Параметр     | Значение |
+| ------------ | -------- |
+| Аудитория    | Java mid+ / senior |
+| Длительность | ~2 часа (теория + демо на стенде) |
+| Стек         | Spring Boot · Micrometer · Prometheus · Alertmanager · k6 |
+| Формат       | Связный устный текст по блокам |
+| Конспект     | [talk-outline-observability.md](talk-outline-observability.md) |
+| Черновик     | [talk-speech-observability-preliminary.md](talk-speech-observability-preliminary.md) |
+| Источники    | Отдельные блоки: `talk-speech-block-*.md` |
+
+> **Красная нить:** «В проде жалуются на медленные заказы» → язык observability (RED, SLI, MELT) → Prometheus + PromQL → Micrometer/Actuator в Spring → симптомные алерты → k6 как воспроизводимая нагрузка.
+
+---
+
+## Оглавление
+
+- [Блок 0. Вступление](#блок-0-вступление)
+- [Блок 1. Push и scrape](#блок-1-push-и-scrape)
+- [Блок 2. Типы метрик Prometheus](#блок-2-типы-метрик)
+- [Блок 3. PromQL: типы данных, selectors и matchers](#блок-3-promql-basics)
+- [Блок 4. PromQL: binary и aggregation operators](#блок-4-promql-operators)
+- [Блок 6. Алерты](#блок-6-алерты)
+
+---
+
+## Блок 0. Вступление {#блок-0-вступление}
+
+## Спич
+
+### Открытие
+
+Итак, давайте поговорим про observability — точнее, про то, что будет, если её в системе просто нет.
+
+Практически хрестоматийная ситуация. Пятница вечер. Пользователи массово жалуются: заказы не проходят, или «Authentication failed». Вы заходите в систему — снаружи вроде всё работает, алертов нет, метрик почти нет, логи есть только кусочком. В худшем случае логи приходят файлом на почту, или вы в терминале вручную грепаете. Трассировок вообще нет. И мы начинаем судорожно выяснять: то ли запрос не дошёл до сервиса, то ли упал какой-то компонент, то ли база тормозит, то ли вчера задеплоили новую версию, то ли внешняя API просто не отвечает. Не видим, где именно проблема. Часы уходят на ручной разбор логов. Ошибку нормально воспроизвести сложно. Даже если есть staging — он всё равно не прод: другая нагрузка, другой конфиг. О сбоях узнаём от пользователей. И начинаем нервно перезапускать сервисы вслепую — в надежде, что отпустит.
+
+Почему это больно именно нам, Java-разработчикам? В монолите ещё можно поднять приложение локально, открыть один log-файл, поставить breakpoint — и как-то отдебажить. А в распределённой системе запрос идёт иначе: API Gateway, несколько микросервисов, брокер, кэш, база. Ошибка может случиться на любом этапе, а проявиться — в другом месте. Получили странный ответ во втором сервисе — а выстрелило это у пользователя в четвёртом. Плюс таймауты, ретраи, circuit breaker — они маскируют первопричину: в логах уже не исходный сбой, а «upstream timed out». Сто микросервисов локально не поднимешь — эмуляторы и моки помогают, но один в один прод вы всё равно не воспроизведёте. Без метрик и трассировок не узнаете, где тормозит запрос, кто породил ошибку, почему выросла нагрузка. Распределёнка без observability — чёрный ящик: что-то происходит, а что сломалось, где и почему — непонятно.
+
+Observability, наблюдаемость — это способность системы давать внутреннюю информацию, которой достаточно, чтобы понять её состояние и причинно-следственные связи, желательно без того, чтобы под каждый инцидент срочно менять код. Это не «ещё один дашборд». Это глаза и уши в проде, когда система растёт — и по технике, и по бизнес-логике.
+
+Monitoring и observability — не одно и то же. Monitoring отвечает на вопрос «что сломалось» — по правилам, которые мы заранее придумали. Observability — «почему» и «где именно», в том числе когда сбой неожиданный. Monitoring без данных observability не живёт — нечего копать. Но одних алертов на CPU мало: пользователь уже страдает, HTTP ещё отдаёт двести.
+
+---
+
+### Снаружи и изнутри
+
+Есть два привычных взгляда — их часто называют чёрным и белым ящиком.
+
+Чёрный ящик — смотрим как пользователь или как k6: кинули запрос, получили ответ. Медленно, ошибка, недоступно — видно. Почему — пока нет. Вопрос простой: страдает ли клиент?
+
+Белый ящик — заглядываем внутрь: счётчики HTTP, пул Hikari, heap JVM, строки в логе. Вырос p95 на заказах, пул забит два из двух, память ползёт вверх. Вопрос другой: что внутри перегружено или сломано?
+
+Оба нужны. Только снаружи — симптом есть, локализации нет. Только изнутри — внутри «всё зелёное», а клиент страдает из‑за сети или соседнего сервиса. На инциденте обычно так: сначала симптом снаружи, потом гипотеза изнутри, потом уточняем логами и трейсом.
+
+---
+
+### MELT
+
+Давайте разберём, из чего observability складывается на практике. Основа — аббревиатура MELT. Есть и «три столпа», но MELT встречается чаще — и там явно есть events, события, которые между метриками и логами легко потерять.
+
+MELT — это Metrics, Events, Logs, Traces. Четыре источника данных, без которых в распределённой системе полной картины не собрать. Сейчас по каждому пройдёмся. А главное — не четыре отдельных инструмента, а то, что мы их используем вместе: метрики показывают, что стало хуже в массе; события — что изменилось рядом по времени; логи — что именно случилось в приложении; трейсы — куда ушёл один конкретный запрос. Совместно это позволяет быстрее разбирать инциденты и видеть поведение системы в реальном времени. Связка — одна временная шкала и trace id в трейсе, в логах, на графике. Его же называют X-Ray id, correlation id — суть одна.
+
+#### M — метрики
+
+Metrics — это числовые метрики. Они отражают текущее состояние системы: производительность, нагрузку, время ответа, ошибки. Собираются регулярно, лежат на графике во времени. Одна точка — это не один ваш HTTP-вызов, а сводка по тысячам запросов. Поэтому на метриках мы смотрим тренды, дашборды, алерты.
+
+Например, время отклика HTTP — в Spring это часто что-то вроде http server requests seconds; по гистограмме считаем p95. Или сколько активных сессий, сколько занято соединений в пуле.
+
+Для HTTP-сервиса полезно помнить RED: Rate — сколько запросов в секунду, Errors — какая доля сбоев, Duration — как быстро отвечаем. Рядом — golden signals из Google SRE: latency, traffic, errors и saturation — насколько забиты лимитирующие ресурсы. Saturation важен отдельно: ответы ещё двести, а все потоки стоят в очереди за connection из пула — пользователь уже страдает, а по ошибкам на графике тихо. RED — с чего начать для API; saturation — чтобы не пропустить деградацию под капотом.
+
+#### E — события
+
+Events — это не поток запросов и не строка в логе. Это фиксация важного изменения: задеплоили новую версию, перезапустился pod, поменяли конфиг, сработал autoscaling, включили feature flag. Или бизнес-событие — пользователь оформил заказ — если вы его кладёте в timeline.
+
+Зачем? Частый вопрос на инциденте: что изменилось рядом по времени? p95 пополз в четырнадцать ноль два, а в четырнадцать ноль один выкатили релиз — первая мысль уже не «медленный SQL», а «свежий деплой». Events метрики не заменяют: без RPS и p95 не видно масштаба. Но без events можно час копать код, хотя всё началось с инфраструктуры.
+
+#### L — логи
+
+Логи — структурированные или текстовые записи о том, что произошло в приложении, в каком порядке.
+
+Метрика говорит: пять процентов запросов — пятисотые. Лог на одном из них говорит конкретнее: в order-service ошибка, не смогли создать заказ для пользователя с таким-то id, вот exception, вот stack trace. Или Hikari пишет, что connection из пула не взяли за тридцать секунд.
+
+Логи не отвечают «стало ли хуже за последний час» — для этого metrics. Тысяча ERROR в минуту без baseline — тоже непонятно, норма это или катастрофа. В Java у нас SLF4J, Logback; в проде имеет смысл класть trace id в MDC — чтобы строка лога совпала с трейсом.
+
+#### T — трейсы
+
+Трейсы, трассировки — путь одного запроса через всю распределённую систему. Дерево span’ов на одной шкале времени. Помогают найти узкие места и понять, как компоненты друг с другом разговаривают — когда смотрим не «в среднем», а один конкретный запрос.
+
+Пример. Post checkout: API Gateway, order-service, payment-service, inventory-service — на каждом шаге видна задержка. Снаружи ошибка на gateway. Берём trace id — в логах, в UI — и видим: упал payment-service, хотя жалоба «на заказы». Или запрос занял сто миллисекунд: шестьдесят ушло на соседний сервис, тридцать на базу, десять на код внутри. Метрика сказала бы «много запросов медленные»; один trace говорит «тормозит вот здесь, а не в PostgreSQL».
+
+| Буква | О чём        | Что спрашиваем              |
+| ----- | ------------ | --------------------------- |
+| M     | Метрики      | Стало ли хуже в массе?      |
+| E     | События      | Что изменилось в системе?   |
+| L     | Логи         | Что случилось в приложении? |
+| T     | Трейсы       | Куда ушло время у запроса?  |
+
+Итого: ценность не в четырёх вкладках в браузере, а в том, что вы их накладываете друг на друга по времени.
+
+---
+
+### SLI, SLO, SLA
+
+Ещё один слой — язык обещаний пользователю. Метрики и алерты должны быть привязаны к опыту клиента, а не к «CPU девяносто процентов» без контекста.
+
+SLI — как мы измеряем опыт: p95 latency, доля запросов без пятисотых. Всегда про пользователя.
+
+SLO — цель на период: девяносто девять целых девять десятых без пятисотых за тридцать дней, p95 меньше трёхсот миллисекунд. Для команды: к какому качеству стремимся.
+
+SLA — договор с клиентом, часто с последствиями. Внутри SLO жёстче, чем в контракте — это нормально.
+
+Error budget — сколько «плохого» опыта ещё можно потратить. Бюджет есть — можно рисковать релизами. Сгорел — фокус на стабильности, а не на фичах.
+
+---
+
+## Блок 1. Push и scrape {#блок-1-push-и-scrape}
+
+## Спич
+
+### Переход из части 0
+
+Во вступлении мы зафиксировали сюжет: «медленные заказы», RED, MELT, путь через Actuator и Prometheus. Не «ещё один дашборд», а язык доказательств. Сейчас — **как данные физически попадают** в систему наблюдаемости. Это фундамент: без него PromQL и алерты кажутся магией.
+
+---
+
+### Два способа
+
+Когда говорим, **как observability получает данные**, на практике почти всегда два подхода: **push** и **scrape**.
+
+**Push** — проталкивание. Сервис **сам отправляет** метрики, логи или трейсы в сборщик. В экосистеме это Alloy, OpenTelemetry Collector, Loki, Tempo, Prometheus Pushgateway. Модель простая для источника: «сформировал — отправил». Но она требует, чтобы кто-то принял данные, сделал ретраи, не уронил приложение, если приёмник тормозит.
+
+**Scrape** — опрос, pull. **Сборщик сам приходит** за данными. Prometheus раз в N секунд делает HTTP GET на endpoint приложения — у нас это `/actuator/prometheus` — и забирает текущий снимок метрик. Приложение не «шлёт в Prometheus»; оно **отдаёт по запросу**. Это другая ответственность: централизованный конфиг, кого опрашивать, с каким интервалом, какие labels навесить.
+
+У каждого способа — свои сценарии. Путаница обычно в том, что любой HTTP с метриками называют push. Нет: если **инициатор — Prometheus**, это scrape. Push — когда **инициатор — приложение или агент**.
+
+---
+
+### Push — когда и зачем
+
+Push удобен, когда **нельзя или неудобно опрашивать** систему снаружи.
+
+Классика — **короткоживущие процессы**. Cron, batch, CI-job: поднялся, отработал, умер. Prometheus не успеет: к следующему scrape адреса уже нет. Тогда метрики **пушат в Pushgateway**, а Prometheus уже scrape’ит сам gateway — косвенно, но job не теряется.
+
+Второй большой класс — **не метрики, а потоки**. **Логи** и **трейсы** — это события. Их нельзя честно «снять раз в пятнадцать секунд», как gauge на дашборде. Потерялось между опросами — потерялся инцидент. Поэтому логи и трейсы в индустрии почти всегда **push**: приложение или агент шлёт в Collector, дальше — Loki, Tempo, иногда экспорт в Prometheus.
+
+Как в типичном стеке с OpenTelemetry: приложение генерирует телеметрию, агент принимает по OTLP — HTTP или gRPC — и **пушит** дальше. Один pipeline, разные бэкенды.
+
+---
+
+### Scrape — основной путь метрик Spring
+
+Для **долгоживущего** Java-сервиса доминирует **scrape**.
+
+Почему так сложилось. Сервис стабилен, адрес известен — в Docker compose это `order-service:8080`, в Kubernetes — Service. Micrometer уже считает HTTP, JVM, пул. Actuator отдаёт текстовый exposition на `/actuator/prometheus`. Prometheus **сам** ходит за метриками — раз в десять или пятнадцать секунд, как в конфиге.
+
+Плюсы pull-модели: **простая настройка** на стороне приложения — один endpoint; **масштабирование** — добавили target в `scrape_configs` или service discovery; **устойчивость** — один неудачный scrape не катастрофа, следующий повторит. В UI сразу видно: target **UP** или **DOWN**, метрика `up`.
+
+В конфиге стенда — `scrape_configs`, job `order-service`, путь `/actuator/prometheus`, labels `service` и `env`. Глобально — `scrape_interval: 15s` для всех jobs, у order-service можно чаще — десять секунд.
+
+Типичная картина из практики: открываем Prometheus, **Status → Targets**, видим зелёный UP — значит, цепочка «приложение отдаёт — Prometheus забирает» жива. Только после этого имеет смысл строить PromQL.
+
+Ограничение scrape честное: **нет стабильного endpoint — нет scrape**. Временный pod без Service, batch на тридцать секунд — не ваш случай для pull. Туда — Pushgateway или другой канал.
+
+---
+
+### Сравнение одной таблицей
+
+Если сжать, как в нашем опорном видео:
+
+- **Push** — сервис или агент **сам шлёт**. Когда опрос снаружи плох. Логи, трейсы, cron, synthetic load. Нужны доставка и ретраи.
+- **Scrape** — **Prometheus опрашивает**. Endpoint обязателен. Долгоживущие веб-приложения. **Основной путь метрик** Spring.
+
+Не «один правильный способ на всё MELT». **Metrics** у API — scrape. **Logs** — push. **Traces** — push. На инциденте вопрос разный: метрики не видим — смотрим **Targets**; логи не видим — pipeline агента и доставку.
+
+---
+
+### Exporters
+
+Scrape мы привязали к Spring: Actuator отдаёт текст на `/actuator/prometheus`. Но PostgreSQL, Redis, Nginx, Linux-хост — не каждый компонент **умеет** отдавать метрики в формате Prometheus. Здесь — **exporters**, как в опорном видео сразу после push и scrape.
+
+**Exporters** — специализированные агенты или сервисы, которые **собирают метрики из внешних систем** — баз данных, серверов, приложений, middleware — и **переводят** их в текстовый exposition format, который понимает Prometheus. Это не push: экспортер **отдаёт** `/metrics` по HTTP, а Prometheus **сам scrape’ит**. Модель доставки та же, что у Actuator — pull.
+
+Схема устная: `[PostgreSQL] ← postgres_exporter ← scrape ← [Prometheus]`. Рядом: `[order-service] ← scrape напрямую` — Micrometer уже встроен в приложение.
+
+#### Популярные типы экспортеров
+
+**Node Exporter** — базовый экспортер для серверов **Linux**. Собирает операционку: загрузку **CPU**, **оперативную память**, **диски**, **сетевой трафик**, load. Отдельный бинарник, порт по умолчанию **9100**, путь `/metrics`. В `scrape_configs` — job `lab-host-node` на target `lab-host:9100`. На стенде — контейнер `lab-host` (Ubuntu + Node Exporter в образе): после `docker compose up` target **UP**, метрики `node_cpu_seconds_total`, `node_memory_MemAvailable_bytes`. Демо: вручную `stress-ng` в `lab-host` — нагрузка CPU видна в Prometheus через несколько секунд (scrape 5s). **Модель** — инфраструктура рядом с приложением; позже добавим `order-service` как второй target.
+
+**Blackbox Exporter** — не «метрики внутри процесса», а **проверка доступности** снаружи: HTTP-ответы, **ICMP**-ping, TCP, срок действия **SSL-сертификатов**. Синтетика: «доступен ли URL для пользователя», а не «сколько памяти съел Nginx».
+
+**Базы данных** — отдельный экспортер на каждую СУБД: **postgres_exporter** для PostgreSQL, **mysqld_exporter** для MySQL. Читают статистику БД — connections, replication lag, slow queries — и отдают в Prometheus-формате. На стенде с Postgres это отдельный контейнер и отдельный job в Targets.
+
+**Приложения и сервисы** — **redis_exporter**, **elasticsearch_exporter**, **nginx_exporter** и аналоги: метрики конкретного middleware без встраивания клиента в код приложения.
+
+Для **legacy Java** без Spring — **jmx_exporter** (чтение JMX). 
+
+
+#### Spring: встроенный экспорт
+
+Путь из части 0: **JMX → Micrometer → Actuator → `/actuator/prometheus`**. Spring Boot с `micrometer-registry-prometheus` **уже** играет роль экспортера: HTTP, JVM, пулы — отдельный sidecar не обязателен.
+
+**Итого:** exporter = сбор + перевод формата; доставка = scrape. Внешние системы — отдельный процесс; Spring API — Actuator. На инциденте «медленные заказы»: тормозит **код** (`http_server_requests_*`) или **хост** (`node_*`) — смотрим оба слоя, если Node Exporter подключён.
+
+---
+
+### Дальше по программе
+
+Targets UP, CPU на Graph — метрики **есть**. Стенд с AM и Telegram (`.env`) поднят с начала; **live алертов** — **блок 6**. **Следующий блок:** типы метрик — [talk-speech-block-2-metric-types.md](talk-speech-block-2-metric-types.md) (counter, gauge, histogram; на `/metrics` Node Exporter). PromQL — [блок 3](talk-speech-block-3-promql-basics.md).
+
+---
+
+## Блок 2. Типы метрик Prometheus {#блок-2-типы-метрик}
+
+## Что вы должны знать (шпаргалка лектора)
+
+| Вопрос | Короткий ответ |
+|--------|----------------|
+| Time series? | Имя метрики + **labels** + значение во времени |
+| Counter? | Только **растёт**; для rate/RPS — `rate()` / `increase()` |
+| Gauge? | **Вверх/вниз**; текущее состояние (память, CPU %, активные conn) |
+| Histogram? | **Корзины** `le` + `_sum` / `_count` → p95 через `histogram_quantile` |
+| Summary? | Квантили на **клиенте**; в Spring/Micrometer чаще **histogram** |
+| На lab сейчас | Counter/Gauge на Node Exporter; Histogram — с `order-service` |
+| Антипаттерн | `userId`, `orderId` в labels → взрыв cardinality |
+
+---
+
+## Спич
+
+### Переход из блока 1
+
+Targets **UP**, Prometheus scrape’ит `/metrics` — мы видели **текст** exposition format. Строка выглядит просто: имя, labels, число. Но если трактовать всё одинаково — PromQL и алерты будут врать. Следующий слой — **тип метрики**: counter, gauge, histogram, summary. От типа зависит, можно ли усреднять «как есть», нужен ли `rate()`, откуда берётся p95.
+
+---
+
+### Time series — базовая единица
+
+**Time series** — уникальная комбинация **имени метрики** и **набора labels**, значения которой меняются во времени.
+
+Пример с Node Exporter:
+
+```text
+node_cpu_seconds_total{cpu="0", mode="idle", job="lab-host-node"}  12345.67
+```
+
+| Часть | Смысл |
+|-------|--------|
+| `node_cpu_seconds_total` | Имя метрики |
+| `cpu="0", mode="idle", job="lab-host-node"` | Labels — измерения, по которым **агрегируем** |
+| `12345.67` | Текущее значение (snapshot при scrape) |
+
+Один scrape — **снимок**. Prometheus склеивает снимки в ряд на временной шкале. PromQL — язык запросов к этим рядам.
+
+**Labels — осознанно:** `job`, `instance`, `uri`, `status` — норма. `userId`, `orderId` на каждый запрос — **антипаттерн**: каждая комбинация = новый ряд, память TSDB, медленные запросы. Идентификаторы — в **логи и traces**, не в labels метрик.
+
+---
+
+### Counter — счётчик «только вверх»
+
+**Counter** монотонно **растёт** (сброс при рестарте процесса — норма).
+
+| Где | Метрика |
+|-----|---------|
+| Node Exporter | `node_cpu_seconds_total`, `node_network_receive_bytes_total` |
+| Spring (позже) | `http_server_requests_seconds_count` |
+| k6 (позже) | `k6_http_reqs_total` |
+
+**Смысл:** «сколько **уже произошло**» — секунд CPU, байт, запросов.
+
+**PromQL:** сырое значение counter на графике — бессмысленная «лестница вверх». Нужны **`rate()`** или **`increase()`** за окно:
+
+```promql
+rate(node_cpu_seconds_total{job="lab-host-node", mode!="idle"}[5m])
+```
+
+```promql
+sum(rate(http_server_requests_seconds_count{job="order-service"}[5m]))
+```
+
+**Rate (RED)** — counter + `rate()` = запросов в секунду.
+
+**Ошибка новичка:** алертить «counter > 1000» без `rate()` — сработает всегда, counter только растёт.
+
+---
+
+### Gauge — «сколько сейчас»
+
+**Gauge** может **расти и падать** — мгновенное или текущее состояние.
+
+| Где | Метрика |
+|-----|---------|
+| Node Exporter | `node_memory_MemAvailable_bytes`, load |
+| Spring | `jvm_memory_used_bytes`, `hikaricp_connections_active` |
+| Micrometer | `process_cpu_usage` (0..1) |
+| k6 | `k6_vus` — активные виртуальные пользователи |
+
+**Смысл:** «сколько **сейчас**» — память, активные соединения, загрузка.
+
+**PromQL:** часто можно смотреть **напрямую** или через простую арифметику:
+
+```promql
+node_memory_MemAvailable_bytes{job="lab-host-node"}
+```
+
+```promql
+hikaricp_connections_active / hikaricp_connections_max
+```
+
+Наш учебный алерт `HighCpu` — по сути **gauge-подобная** формула из counter idle (процент CPU), не сырой counter.
+
+**Ошибка новичка:** применять `rate()` к gauge памяти «чтобы сгладить» — исказите смысл; `rate()` для gauge только когда осознанно нужна **скорость изменения**.
+
+---
+
+### Histogram — распределение и latency
+
+**Histogram** считает наблюдения по **корзинам (buckets)** с upper bound `le` (less or equal). Для каждой метрики-histogram Prometheus/Micrometer отдаёт несколько рядов:
+
+| Сuffix | Тип | Смысл |
+|--------|-----|--------|
+| `_bucket{le="0.1"}` | counter | сколько наблюдений ≤ 0.1s |
+| `_bucket{le="0.5"}` | counter | … ≤ 0.5s |
+| `_bucket{le="+Inf"}` | counter | все наблюдения |
+| `_sum` | counter | сумма значений (например, суммарное время) |
+| `_count` | counter | число наблюдений |
+
+Spring / Micrometer:
+
+```text
+http_server_requests_seconds_bucket{uri="/api/orders", le="0.5", status="200"}  42
+http_server_requests_seconds_sum{uri="/api/orders"}  ...
+http_server_requests_seconds_count{uri="/api/orders"}  ...
+```
+
+**Зачем:** среднее latency **обманывает** — 99 быстрых + 1 на 10 с дают «нормальное среднее». Нужны **квантили** — p95, p99.
+
+**PromQL — p95 (Duration в RED):**
+
+```promql
+histogram_quantile(0.95,
+  sum(rate(http_server_requests_seconds_bucket{job="order-service"}[5m])) by (le, uri)
+)
+```
+
+`histogram_quantile` — **оценка** по buckets на стороне Prometheus; чем больше buckets и трафик, тем точнее.
+
+**На lab (фаза 1):** histogram HTTP ещё нет — появится с `order-service`. На `/metrics` Node Exporter histogram **не** главный пример; можно показать идею на слайде и вернуться live в Spring-блоке.
+
+---
+
+### Summary — квантили на клиенте
+
+**Summary** похож на histogram, но **квантили считаются в приложении** при записи (`quantile=0.95` в labels), а не через `histogram_quantile` в PromQL.
+
+| | Histogram | Summary |
+|---|-----------|---------|
+| Квантили | Prometheus: `histogram_quantile()` | Клиент отдаёт готовые |
+| Агрегация между pod'ами | sum buckets → quantile | **Плохо** — quantile нельзя усреднить |
+| Spring Boot / Micrometer | **По умолчанию histogram** | Summary редко |
+
+**На лекции:** знать, что summary **есть** в модели Prometheus; в Java-стеке опираемся на **histogram** + `histogram_quantile`. Если в `/metrics` видите `_bucket` — histogram; `quantile="0.99"` в label — summary.
+
+---
+
+### Примеры PromQL по типам (слайд / Graph)
+
+| Тип | Вопрос | Метрика | PromQL | Работает на lab сейчас? |
+|-----|--------|---------|--------|-------------------------|
+| **Counter** | Сколько **байт/с** по сети? | `node_network_receive_bytes_total` | `sum(rate(node_network_receive_bytes_total{job="lab-host-node"}[5m]))` | ✅ |
+| **Counter** | **RPS** HTTP? | `http_server_requests_seconds_count` | `sum(rate(http_server_requests_seconds_count{job="order-service"}[5m]))` | после Spring |
+| **Counter** | **Доля 5xx**? | тот же counter + `status` | `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count{job="order-service"}[5m]))` | после Spring |
+| **Gauge** | Сколько **RAM** свободно? | `node_memory_MemAvailable_bytes` | `node_memory_MemAvailable_bytes{job="lab-host-node"}` | ✅ |
+| **Gauge** | **Заполненность** пула JDBC? | `hikaricp_connections_*` | `hikaricp_connections_active / hikaricp_connections_max` | после Spring |
+| **Gauge** | **CPU** процесса Java (0..1)? | `process_cpu_usage` | `process_cpu_usage{job="order-service"}` | после Spring |
+| **Histogram** | **p95 latency** `/api/orders`? | `http_server_requests_seconds_bucket` | см. ниже | после Spring |
+| **Summary** | p95 **с клиента** (без `histogram_quantile`)? | `…_seconds{quantile="0.95"}` | `http_request_duration_seconds{quantile="0.95", job="order-service"}` | редко в Micrometer |
+
+**Counter — приём байт/с (lab, вставить в Graph):**
+
+```promql
+sum(rate(node_network_receive_bytes_total{job="lab-host-node"}[5m]))
+```
+
+**Gauge — свободная память (lab):**
+
+```promql
+node_memory_MemAvailable_bytes{job="lab-host-node"}
+```
+
+**Histogram — p95 latency (Spring, RED Duration):**
+
+```promql
+histogram_quantile(0.95,
+  sum(rate(http_server_requests_seconds_bucket{job="order-service", uri="/api/orders"}[5m])) by (le)
+)
+```
+
+**Summary — готовый квантиль (если экспортер отдаёт summary, не Micrometer по умолчанию):**
+
+```promql
+# читаем напрямую; между pod'ами так агрегировать нельзя
+some_latency_seconds{quantile="0.95", job="order-service"}
+```
+
+**Производная gauge из counter (CPU % — как в алерте `HighCpu`):**
+
+```promql
+100 - (avg(irate(node_cpu_seconds_total{mode="idle", job="lab-host-node"}[1m])) * 100)
+```
+
+---
+
+### Четыре типа — одной таблицей
+
+| Тип | Вопрос | Можно «как есть» на графике? | Типичный PromQL | RED / Golden |
+|-----|--------|------------------------------|-----------------|--------------|
+| **Counter** | Сколько **накопилось**? | Нет — лестница | `rate()`, `increase()` | **Rate**, **Errors** (доля) |
+| **Gauge** | Сколько **сейчас**? | Да | прямое значение, ratio | **Saturation** (heap, pool) |
+| **Histogram** | **Распределение** (latency)? | buckets — counter-подобно | `histogram_quantile` | **Duration** (p95) |
+| **Summary** | Квантиль **на клиенте**? | осторожно при aggregate | готовый quantile label | Duration (редко в Spring) |
+
+---
+
+### Связь с RED и «медленными заказами»
+
+Красная нить из блока 0:
+
+| RED | Тип метрики | Пример |
+|-----|-------------|--------|
+| **Rate** | Counter + `rate()` | RPS на `/api/orders` |
+| **Errors** | Counter + labels `status` | доля 5xx |
+| **Duration** | Histogram + `histogram_quantile` | p95 latency |
+
+**Saturation** (golden signals, не в RED) — чаще **gauge**: пул JDBC, heap, CPU process.
+
+Без понимания типов нельзя честно ответить «медленные заказы» — p95 из histogram, error rate из counter, пул из gauge.
+
+---
+
+### Live на стенде (после блока 1)
+
+1. http://localhost:9100/metrics — найти **TYPE** (Prometheus exposition):
+
+```text
+# TYPE node_cpu_seconds_total counter
+# TYPE node_memory_MemAvailable_bytes gauge
+```
+
+2. Prometheus → **Graph** — counter: `rate(node_cpu_seconds_total{mode="user"}[1m])`; gauge: `node_memory_MemAvailable_bytes`.
+
+3. Фраза: «HTTP histogram увидим, когда подключим Actuator — там `_bucket` и p95 для алерта `HighHttpLatencyP95`».
+
+Runbook: [practical-scenarios.md](practical-scenarios.md) — **Сценарий 1b**.
+
+---
+
+### Хорошие практики vs антипаттерны
+
+| Хорошо | Плохо |
+|--------|-------|
+| `rate(counter[5m])` для RPS | График сырого counter |
+| p95 из histogram buckets | Среднее latency «для SLO» |
+| Gauge для «сколько сейчас» | `rate()` на heap gauge без причины |
+| Стабильные labels: `uri`, `status` | `orderId` в labels |
+| Histogram в Micrometer для HTTP | Summary + aggregate по pod'ам |
+
+---
+
+### Итого блока
+
+1. Time series = имя + labels + значения во времени.
+2. **Counter** — накопление; **gauge** — текущее; **histogram** — распределение; **summary** — квантили на клиенте.
+3. RED на HTTP: counter (R, E) + histogram (D); saturation — gauge.
+4. На lab: counter/gauge на Node Exporter; histogram — с Spring.
+5. Дальше — **PromQL**: типы данных, selectors и matchers — [блок 3](talk-speech-block-3-promql-basics.md).
+
+---
+
+## Блок 3. PromQL: типы данных, selectors и matchers {#блок-3-promql-basics}
+
+## Что вы должны знать (шпаргалка лектора)
+
+| Вопрос | Короткий ответ |
+|--------|----------------|
+| Instant vector? | Набор рядов, **одна точка** на ряд, **одна** метка времени |
+| Range vector? | Набор рядов, **диапазон точек** за окно `[5m]` — вход для `rate()` |
+| Scalar? | Одно число (`23`, `0.95`, результат `count()`) |
+| String? | Строка; в запросах **почти не используется** |
+| Instant query? | «Сейчас» — вкладка **Table** в UI |
+| Range query? | График по шагам — вкладка **Graph**; корень expr — только scalar или instant vector |
+| Selector? | **Instant vector selector** — `{matchers}` или `name{matchers}`; **range** — то же + `[duration]` |
+| Lookback? | Instant selector вернёт ряд только если последний sample **не старше lookback** (по умолчанию **5m**) |
+| Matcher `=` / `!=` | Точное совпадение / исключение значения label |
+| Matcher `=~` / `!~` | Regex (полное совпадение, как `^…$`) / отрицание regex |
+| Антипаттерн | `{job=~".*"}` — **нелегально**; нужен хотя бы один matcher, не матчащий пустую строку |
+
+---
+
+## Спич
+
+### Переход из блока 2
+
+Мы разобрали **типы метрик** в exposition format: counter растёт, gauge колеблется, histogram даёт `_bucket`. Prometheus склеивает scrape-снимки в **time series**. Следующий слой — **PromQL** (Prometheus Query Language): язык запросов к этим рядам. Без него Graph в UI, Grafana и `expr` в алертах — просто текстовые поля.
+
+PromQL — **функциональный** язык: выражение или подвыражение **вычисляется** в один из четырёх типов данных. От типа зависит, что можно построить на графике, что передать в `rate()`, и почему иногда запрос «синтаксически верный», но бессмысленный.
+
+---
+
+### Четыре типа данных PromQL
+
+В языке выражений PromQL выражение или подвыражение может принимать один из **четырёх типов**:
+
+| Тип | Смысл | Аналогия |
+|-----|--------|----------|
+| **Instant vector** | Набор временных рядов, у каждого **одна** выборка (sample), все с **одинаковой** меткой времени | «Снимок сейчас»: 47 рядов → 47 чисел на один timestamp |
+| **Range vector** | Набор рядов, у каждого **диапазон** точек за окно во времени | «Плёнка» за последние 5 минут — вход для `rate()`, `increase()` |
+| **Scalar** | Одно число с плавающей запятой | `42`, `0.6`, результат `count()` |
+| **String** | Строковое значение | В PromQL **сейчас не используется** как результат запросов |
+
+**Instant vector** — самый частый «промежуточный» и финальный тип. Селектор `node_cpu_seconds_total{job="lab-host-node"}` без суффикса `[…]` возвращает instant vector: для каждого уникального набора labels — **последняя** точка на момент evaluation time. На вкладке **Table** в Prometheus UI вы видите именно instant query.
+
+**Range vector** появляется, когда к селектору добавляют **длительность в квадратных скобках**:
+
+```promql
+node_cpu_seconds_total{job="lab-host-node", mode="user"}[5m]
+```
+
+Это уже не «одно число на ряд», а **набор точек за 5 минут** на каждый ряд. Range vector **нельзя** нарисовать на Graph «как есть» — его потребляют **функции**: `rate()`, `increase()`, `avg_over_time()` и т.д. Отсюда типичная ошибка новичка: забыть `[5m]` у counter и удивиться, что `rate()` не принимает выражение.
+
+**Scalar** — когда выражение схлопнулось до одного числа: `count(up == 0)`, литерал `0.95` в `histogram_quantile(0.95, …)`, сравнение в алерте `> 0.6`. Scalar удобен в Table; на Graph range query **может** иметь scalar или instant vector в корне — другие типы в корне для графика не подходят.
+
+**String** — формально есть (литералы в кавычках), но как **результат** запроса в production-практике не встречается. Достаточно знать, что тип существует, и не путать его с label-значениями в matchers.
+
+#### Instant query vs range query
+
+Prometheus выполняет запрос двумя способами:
+
+- **Instant query** — одна точка evaluation time («сейчас» или timestamp из API). Корень выражения может быть **любого** из четырёх типов. UI: **Table**.
+- **Range query** — тот же PromQL **много раз** с шагом `step` между `start` и `end`. Корень — только **scalar** или **instant vector**. UI: **Graph**.
+
+Фраза для аудитории: «PromQL **один и тот же**; меняется только **как часто** мы его прогоняем. Graph — это instant vector на каждом шаге времени, соединённый линией».
+
+#### Мост к типам метрик (блок 2)
+
+| Что в exposition | Что в PromQL после селектора | Типичный следующий шаг |
+|----------------|----------------------------|-------------------------|
+| Counter `node_cpu_seconds_total` | Instant vector (сырое значение растёт) | `[5m]` → range vector → `rate()` → instant vector (RPS-подобная скорость) |
+| Gauge `node_memory_MemAvailable_bytes` | Instant vector | Часто смотрим **напрямую** на Graph |
+| Histogram `_bucket` | Instant vector на каждый `le` | `rate(…[5m])` + `histogram_quantile` → scalar на квантиль |
+
+Counter vs gauge мы уже знаем **на стороне метрики**. PromQL добавляет второе измерение: **instant vs range** — «одна точка» или «окно для производной».
+
+---
+
+### Selectors — как указать, какие ряды брать
+
+**Time series selectors** — базовые строительные блоки PromQL ([документация](https://prometheus.io/docs/prometheus/latest/querying/basics/#time-series-selectors)): они указывают, **какие** ряды и **какие точки** достать из TSDB.
+
+Два вида селекторов:
+
+| Селектор | Синтаксис | Тип результата |
+|----------|-----------|----------------|
+| **Instant vector selector** | `metric_name` или `metric_name{matchers}` или `{matchers}` | Instant vector |
+| **Range vector selector** | `<instant vector selector>[duration]` | Range vector |
+
+---
+
+#### Instant vector selector
+
+Instant vector selector выбирает набор time series и **один sample** на каждый ряд в заданный момент времени.
+
+**Какой sample берётся:** **самый свежий sample с timestamp ≤ evaluation time** — для instant query это «сейчас», для range query — timestamp **текущего шага** Graph.
+
+**Lookback (важно):** ряд попадёт в результат только если этот sample **не старше lookback period**. По умолчанию lookback = **5 минут** (`--query.lookback-delta`, в API — параметр `lookback_delta`). Если scrape давно не приходил или ряд помечен **stale** — на этом timestamp его **не будет** в instant vector (дыра на графике, не «0»).
+
+В простейшем виде — только **имя метрики**:
+
+```promql
+up
+```
+
+Instant vector: по одному sample для каждого ряда с метрикой `up` (разные `job`, `instance` — разные ряды). На стенде: `up{job="lab-host-node"}` → `1`, если target UP и sample свежий.
+
+**Label matchers** — фильтр в фигурных скобках `{…}` через запятую (логическое **И**):
+
+```promql
+http_requests_total{job="prometheus", group="canary"}
+```
+
+Имя метрики можно **не писать**, если в `{…}` есть хотя бы один matcher, который **не совпадает с пустой строкой**:
+
+```promql
+{job="lab-host-node", mode="user"}
+```
+
+Эквивалент записи с `__name__`: `http_requests_total` = `{__name__="http_requests_total"}`. По regex на имена: `{__name__=~"job:.*"}`.
+
+**Четыре оператора matchers** ([документация](https://prometheus.io/docs/prometheus/latest/querying/basics/#instant-vector-selectors)):
+
+| Оператор | Значение | Пример |
+|----------|----------|--------|
+| `=` | Label **равен** строке | `job="lab-host-node"` |
+| `!=` | Label **не равен** | `method!="GET"` |
+| `=~` | Label **regex-match** (RE2, **полное** совпадение) | `status=~"5.."` |
+| `!~` | Label **не** regex-match | `uri!~"/actuator.*"` |
+
+`env=~"foo"` в Prometheus = `^foo$`, не «подстрока». Для префикса: `job=~"lab-host.+"`.
+
+**Пустое значение label:** matcher `environment=""` выбирает ряды, где label **пустой или label отсутствует**. Пример из документации — при данных:
+
+```text
+http_requests_total
+http_requests_total{replica="rep-a"}
+http_requests_total{replica="rep-b"}
+http_requests_total{environment="development"}
+```
+
+запрос `http_requests_total{environment=""}` вернёт первые три ряда и **исключит** `{environment="development"}`.
+
+**Несколько matchers на одно имя label** — все должны пройти (AND):
+
+```promql
+http_requests_total{replica!="rep-a", replica=~"rep.*"}
+```
+
+→ только `http_requests_total{replica="rep-b"}`.
+
+**Нелегальные селекторы:** нужно **имя метрики** или **хотя бы один matcher, не матчащий пустую строку**:
+
+```promql
+{job=~".*"}                  # Bad — illegal
+{job=~".+"}                  # OK
+{job=~".*", method="get"}    # OK — method="get" не матчит пустое
+```
+
+**Зарезервированные имена метрик:** `bool`, `on`, `ignoring`, `group_left`, `group_right` нельзя использовать как голое имя (`on{}` — ошибка). Обход: `{__name__="on"}`.
+
+#### Примеры instant selector на стенде
+
+**Target жив?**
+
+```promql
+up{job="lab-host-node"}
+```
+
+**CPU по mode (instant, без окна):**
+
+```promql
+node_cpu_seconds_total{job="lab-host-node", mode=~"user|system"}
+```
+
+**HTTP 5xx (задел под RED, когда подключим order-service):**
+
+```promql
+http_server_requests_seconds_count{job="order-service", status=~"5.."}
+```
+
+---
+
+#### Range vector selector
+
+Range vector selector устроен **как instant**, но вместо одной точки возвращает **диапазон samples назад** от evaluation time (от «текущего instant»).
+
+Синтаксис: к instant vector selector добавляется **`[duration]`** — длительность в секундах (float) или с единицами времени (`5m`, `1h30m`):
+
+```promql
+http_requests_total{job="prometheus"}[5m]
+```
+
+**Интервал полуоткрытый слева, закрытый справа:** sample **ровно на левой** границе окна **не** входит; на **правой** — входит. Формулировка из docs: «все значения, записанные **менее чем 5m назад**» относительно evaluation time.
+
+На стенде:
+
+```promql
+node_cpu_seconds_total{job="lab-host-node", mode="user"}[5m]
+```
+
+→ range vector: много timestamp'ов на ряд. Сам по себе на Graph «как финальный результат» range query **не рисуется** — нужна функция (`rate()`, `increase()`, …), которая превратит окно в instant vector или scalar.
+
+Для counter в RED/alerts типично `[1m]`…`[5m]` + `rate()`.
+
+**Range vector для демо (фильтр mode):**
+
+```promql
+node_cpu_seconds_total{job="lab-host-node", mode!~"idle|iowait"}[1m]
+```
+
+---
+
+#### Модификаторы `offset` и `@`
+
+Применяются **сразу после селектора** — для range vector **после `[duration]`**, до оборачивающих функций:
+
+| Модификатор | Смысл | Пример |
+|-------------|--------|--------|
+| **`offset 5m`** | Сдвиг данных на 5m **назад** от evaluation time | `http_requests_total offset 5m` |
+| **`offset -1w`** | Сдвиг **вперёд** (сравнение «неделю спустя») | `rate(http_requests_total[5m] offset -1w)` |
+| **`@ 1609746000`** | Evaluation time селектора = Unix timestamp | `http_requests_total @ 1609746000` |
+| **`@ start()` / `@ end()`** | Для range query — начало/конец диапазона Graph | `rate(http_requests_total[5m] @ end())` |
+
+Правильно:
+
+```promql
+sum(http_requests_total{method="GET"} offset 5m)
+rate(http_requests_total{job="prometheus"}[5m] offset 1w)
+http_requests_total{method="GET"} @ 1609746000 offset 5m   # порядок @ и offset не важен
+```
+
+Неправильно:
+
+```promql
+sum(http_requests_total{method="GET"}) offset 5m   # INVALID — offset не после селектора
+```
+
+На блоке 3 достаточно знать, что модификаторы есть; для алертов и RED чаще хватает `[5m]` и matchers без `offset`/`@`.
+
+**So what?** Широкий instant selector без matchers на проде — тысячи рядов и timeout. Сначала **Table**, сузили — потом Graph. Если ряд «пропал» на графике — проверьте **lookback** и **stale**, а не только matchers.
+
+---
+
+### Демо на стенде (TBD)
+
+1. **Table** → `up` — instant vector, несколько рядов по `job`.
+2. **Table** → `up{job="lab-host-node"}` — один ряд, scalar-подобный результат в Table.
+3. **Graph** → `node_memory_MemAvailable_bytes{job="lab-host-node"}` — gauge, instant vector на каждом шаге.
+4. **Table** → `node_cpu_seconds_total{mode="user", job="lab-host-node"}[5m]` — range vector (много timestamp'ов на ряд); объяснить, почему Graph «не то» без `rate()`.
+5. **Graph** → `rate(node_cpu_seconds_total{mode="user", job="lab-host-node"}[1m])` — мост к следующему блоку (функции).
+
+Runbook: [practical-scenarios.md](practical-scenarios.md) — **Сценарий 1**.
+
+---
+
+### Хорошие практики vs антипаттерны
+
+| Хорошо | Плохо |
+|--------|-------|
+| Сузить `{job="…", mode="user"}` | Голое имя метрики на проде без фильтров |
+| Table → проверить cardinality → Graph | Сразу Graph на `http_server_requests_seconds_count` |
+| Понимать instant vs `[5m]` перед `rate()` | `rate()` без range selector |
+| `status=~"5.."` для класса ошибок | Перечислять каждый `500`, `502`, … через `\|` |
+| `=~` с якорным паттерном `^prefix.*` | Думать, что regex — «подстрока как в grep» |
+| Учитывать lookback/stale при «пропавшем» ряде | Интерпретировать дыру на Graph как «метрика = 0» |
+
+---
+
+### Итого блока
+
+1. PromQL выражения имеют тип: **instant vector**, **range vector**, **scalar**, **string** (последний в запросах не используется).
+2. **Instant query** (Table) vs **range query** (Graph): один язык, разный режим выполнения.
+3. **Instant vector selector** — один sample ≤ evaluation time, в пределах **lookback**; **range** — то же + `[duration]`.
+4. **Matchers** (`=`, `!=`, `=~`, `!~`) — часть instant selector; имя метрики = `__name__`; пустой label ≠ SQL NULL.
+5. Дальше — **binary и aggregation operators** — [блок 4](talk-speech-block-4-promql-operators.md); затем функции и RED.
+
+---
+
+### Источники
+
+| Тема | Источник |
+|------|----------|
+| Типы данных, selectors, matchers | [Prometheus — Querying basics](https://prometheus.io/docs/prometheus/latest/querying/basics/) |
+| Staleness, lookback | [Prometheus — Querying basics (Gotchas)](https://prometheus.io/docs/prometheus/latest/querying/basics/#staleness) |
+| Operators, functions | [Prometheus — Querying](https://prometheus.io/docs/prometheus/latest/querying/) |
+
+---
+
+## Блок 4. PromQL: binary и aggregation operators {#блок-4-promql-operators}
+
+## Что вы должны знать (шпаргалка лектора)
+
+| Вопрос | Короткий ответ |
+|--------|----------------|
+| Binary operators? | Арифметика, сравнение, set (`and`/`or`/`unless`) между **scalar** и **instant vector** |
+| Vector matching? | Два instant vector: ищется **пара** рядов с совпадающими labels |
+| `on()` / `ignoring()`? | `on` — матч **только** по перечисленным labels; `ignoring` — матч по всем **кроме** |
+| One-to-one? | Ровно одна пара на каждый ряд с каждой стороны (default) |
+| `group_left` / `group_right`? | Many-to-one / one-to-many: **много** рядов с одной стороны на **один** с другой |
+| Aggregation? | Схлопнуть instant vector: `sum`, `avg`, `max`, … |
+| `by` / `without`? | `by(l1,l2)` — **оставить** эти labels; `without(l1)` — **убрать** и агрегировать по остальным |
+| RED RPS | `sum(rate(http_server_requests_seconds_count{…}[5m]))` |
+| RED error rate | `sum(rate(…{status=~"5.."}[5m])) / sum(rate(…[5m]))` — бинарный `/` + aggregation |
+| Антипаттерн | `avg(rate(...))` по pod'ам для latency — нужен histogram + `histogram_quantile` |
+
+---
+
+## Спич
+
+### Переход из блока 3
+
+Selectors и matchers отвечают на вопрос «**какие** ряды взять». Следующий слой — **что с ними сделать**: сложить, поделить, отфильтровать, схлопнуть labels. В PromQL это **binary operators** и **aggregation operators** ([документация](https://prometheus.io/docs/prometheus/latest/querying/operators/)).
+
+Без них RED-формулы из части 0 — просто строки: RPS — это `sum` + `rate`; error rate — **деление** двух агрегированных counter'ов; saturation пула — **деление** двух gauge.
+
+---
+
+### Binary operators — обзор
+
+**Binary operators** работают между:
+
+- **scalar / scalar**
+- **instant vector / scalar** — операция применяется к **каждому** sample в векторе
+- **instant vector / instant vector** — нужен **vector matching** (см. ниже)
+
+Три группы (для лекции — первые две + set):
+
+| Группа | Операторы | Результат |
+|--------|-----------|-----------|
+| **Арифметика** | `+` `-` `*` `/` `%` `^` | Число(а); при vector/vector — **metric name сбрасывается** |
+| **Сравнение** | `==` `!=` `>` `<` `>=` `<=` | По умолчанию **фильтр** (false → ряд выпадает); модификатор **`bool`** → `0`/`1` |
+| **Set (только vector/vector)** | `and` `or` `unless` | Фильтр по **наличию** label set, значения с LHS (для `and`/`unless`) |
+
+> **Не на этом блоке:** trigonometric (`atan2`), histogram trim, experimental `fill()` — упомянуть как advanced.
+
+#### Scalar и vector/scalar
+
+```promql
+node_memory_MemAvailable_bytes{job="lab-host-node"} / 1024 / 1024
+```
+
+Gauge в байтах → мегабайты: деление **вектора на scalar** применяется к каждому ряду.
+
+```promql
+process_cpu_usage{job="order-service"} > 0.6
+```
+
+Сравнение vector/scalar: ряды, где условие **false**, **исчезают** из результата — типичный паттерн для `expr` в алерте (без `bool`).
+
+С **`bool`** — ряд остаётся, значение `0` или `1`:
+
+```promql
+up{job="lab-host-node"} == bool 1
+```
+
+Между **двумя scalar** модификатор `bool` **обязателен** — иначе синтаксическая ошибка.
+
+#### Арифметика vector/vector — saturation (Spring, задел)
+
+```promql
+hikaricp_connections_active{job="order-service"}
+  /
+hikaricp_connections_max{job="order-service"}
+```
+
+Два gauge с **одинаковым** набором labels (`job`, `pool`, …) — **one-to-one** match без модификаторов. Результат: доля занятого пула 0…1.
+
+---
+
+### Vector matching
+
+Когда **оба** операнда — instant vector, Prometheus для каждого ряда слева ищет **пару** справа.
+
+**По умолчанию (one-to-one):** совпадает **полный** набор labels и значений. Нет пары — ряд **не попадает** в результат (не «0», а **отсутствие**).
+
+#### `on()` и `ignoring()`
+
+Labels часто **не совпадают** — тогда явно указываем, по чему матчить:
+
+```promql
+<vector expr> <bin-op> ignoring(<labels>) <vector expr>
+<vector expr> <bin-op> on(<labels>) <vector expr>
+```
+
+- **`ignoring(code)`** — матч по всем labels **кроме** `code`
+- **`on(method)`** — матч **только** по `method`
+
+Канонический пример из [документации](https://prometheus.io/docs/prometheus/latest/querying/operators/#one-to-one-vector-matches) — **доля HTTP-ошибок по method**:
+
+```promql
+method_code:http_errors:rate5m{code="500"} / ignoring(code) method:http_requests:rate5m
+```
+
+Без `ignoring(code)` match **не случится**: у левого ряда есть label `code`, у правого — нет.
+
+Результат (one-to-one, один код на method):
+
+```text
+{method="get"}  0.04    # 24/600
+{method="post"} 0.05    # 6/120
+```
+
+#### `group_left` / `group_right` (many-to-one)
+
+Если с **одной** стороны **несколько** рядов на одно значение grouping label — нужен **`group_left`** или **`group_right`**:
+
+```promql
+method_code:http_errors:rate5m / ignoring(code) group_left method:http_requests:rate5m
+```
+
+Слева больше cardinality (несколько `code` на один `method`) → **`group_left`**. Каждый код делится на **общий** RPS method:
+
+```text
+{method="get", code="500"}  0.04
+{method="get", code="404"}  0.05
+{method="post", code="500"} 0.05
+{method="post", code="404"} 0.175
+```
+
+**Правило:** `group_left` — «много» слева; `group_right` — «много» справа. Advanced: часто достаточно `ignoring()` + aggregation, без group modifiers.
+
+Set-операторы (`and`, `or`, `unless`) матчат **все** возможные пары label set по умолчанию; `group_left`/`group_right` для них **не** используются.
+
+#### Приоритет binary operators
+
+От высокого к низкому: `^` → `*`/`/`/`%` → `+`/`-` → сравнения → `and`/`unless` → `or`. На практике — **скобки** в сложных `expr` алертов.
+
+---
+
+### Aggregation operators
+
+**Aggregation operators** принимают **один** instant vector и возвращают vector **с меньшим** числом рядов ([документация](https://prometheus.io/docs/prometheus/latest/querying/operators/#aggregation-operators)).
+
+Синтаксис (`by`/`without` **до** или **после** выражения):
+
+```promql
+<aggr-op> [without|by (<label list>)] (<vector expr>)
+<aggr-op>(<vector expr>) [without|by (<label list>)]
+```
+
+| Оператор | Смысл | Когда на лекции |
+|----------|--------|-----------------|
+| **`sum`** | Сумма sample values | RPS, суммарный traffic, сумма buckets |
+| **`avg`** | Среднее | Осторожно с counter; для gauge — иногда OK |
+| **`min` / `max`** | Мин/макс | Peak heap по pod'ам → `max by (pod)` |
+| **`count`** | Число рядов в группе | Сколько instance UP |
+| **`group`** | `1` на группу, если есть хоть один sample | Редко |
+| **`topk` / `bottomk`** | k рядов с max/min value | «Топ-5 pod по памяти» |
+| **`quantile(φ, v)`** | φ-квантиль **по значениям рядов** | ≠ `histogram_quantile` по buckets! |
+| **`count_values`**, **`stddev`**, **`stdvar`** | Распределение / статистика | Упомянуть, не углубляться |
+
+#### `by` vs `without`
+
+- **`without (instance)`** — убрать label `instance`, **сложить/усреднить** всё остальное
+- **`by (application, group)`** — **оставить только** эти labels (эквивалентная переформулировка для `sum`)
+
+Пример из docs:
+
+```promql
+sum without (instance) (memory_consumption_bytes)
+# эквивалентно
+sum by (application, group) (memory_consumption_bytes)
+```
+
+**`by`** отбрасывает labels **не из списка**, даже если их значения одинаковы у всех рядов.
+
+#### Примеры на стенде (Node Exporter)
+
+**Суммарный CPU user по всем mode (кроме idle) — после `rate()`:**
+
+```promql
+sum without (mode) (
+  rate(node_cpu_seconds_total{job="lab-host-node", mode="user"}[1m])
+)
+```
+
+На lab проще — сумма по **cpu**:
+
+```promql
+sum by (mode) (
+  rate(node_cpu_seconds_total{job="lab-host-node"}[1m])
+)
+```
+
+**Сколько CPU-рядов (для sanity check cardinality):**
+
+```promql
+count(node_cpu_seconds_total{job="lab-host-node"})
+```
+
+**Топ нагрузки по mode:**
+
+```promql
+topk(3, sum by (mode) (rate(node_cpu_seconds_total{job="lab-host-node"}[1m])))
+```
+
+---
+
+### Связка operators + RED (order-service, задел)
+
+Когда подключим Spring Actuator — типичная **цепочка** из части 0:
+
+**Rate (R):**
+
+```promql
+sum(rate(http_server_requests_seconds_count{job="order-service"}[5m]))
+```
+
+`rate()` — **функция** (следующий блок); `sum` — **aggregation** без `by` → один ряд total RPS.
+
+**Errors (E) — binary `/` + aggregation:**
+
+```promql
+sum(rate(http_server_requests_seconds_count{job="order-service", status=~"5.."}[5m]))
+/
+sum(rate(http_server_requests_seconds_count{job="order-service"}[5m]))
+```
+
+Числитель и знаменатель — **scalar-like** instant vector (по одному ряду после `sum`). Деление vector/scalar или vector/vector с одним рядом — доля 5xx.
+
+В алерте `HighHttp5xxRate` знаменатель часто оборачивают в `clamp_min(..., 0.001)` — **функция**, не operator; смысл: не делить на ноль при нулевом traffic.
+
+**Duration (D)** — aggregation **по `le`** перед `histogram_quantile` (функция, не agg operator):
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, uri) (
+    rate(http_server_requests_seconds_bucket{job="order-service"}[5m])
+  )
+)
+```
+
+`sum by (le, uri)` — aggregation; **`quantile(0.95, …)`** по рядам **не** заменяет `histogram_quantile` по bucket'ам.
+
+---
+
+### Демо на стенде (TBD)
+
+1. **Graph** → `sum by (mode) (rate(node_cpu_seconds_total{job="lab-host-node"}[1m]))` — aggregation после rate.
+2. **Table** → `count(up)` — сколько targets в выборке.
+3. **Graph** → `node_memory_MemAvailable_bytes{job="lab-host-node"} / 1024 / 1024` — vector/scalar.
+4. Фраза без live order-service: «error rate = два `sum(rate(...))` через `/` — тот же паттерн, что в `alerts.yml`».
+
+---
+
+### Хорошие практики vs антипаттерны
+
+| Хорошо | Плохо |
+|--------|-------|
+| `sum(rate(...))` для total RPS | `rate(sum(...))` — неверный порядок |
+| `sum by (le, uri)(rate(..._bucket))` перед quantile | `avg(rate(..._bucket))` для p95 |
+| `ignoring(code)` / `on(method)` когда labels различаются | Делить векторы с разными labels «как есть» |
+| Скобки в сложном `expr` алерта | Полагаться на приоритет `and`/`or` |
+| `topk` для «кто виноват» среди pod'ов | `topk` без `by` на тысячах рядов |
+| `group_left` только когда осознанно нужен many-to-one | `group_left` «на всякий случай» |
+
+---
+
+### Итого блока
+
+1. **Binary operators:** арифметика, сравнение (+ `bool`), set (`and`/`or`/`unless`); vector/scalar и vector/vector.
+2. **Vector matching:** default one-to-one; **`on`/`ignoring`**; **`group_left`/`group_right`** для many-to-one.
+3. **Aggregation:** `sum`, `avg`, `min`, `max`, `count`, `topk`, … + **`by`/`without`**.
+4. RED: **`sum(rate(...))`**, error rate через **`/`**, histogram — **`sum by (le, …)`** + `histogram_quantile`.
+5. Дальше — **функции** (`rate`, `increase`, `histogram_quantile`, `clamp_min`).
+
+---
+
+### Источники
+
+| Тема | Источник |
+|------|----------|
+| Binary operators, vector matching | [Prometheus — Operators](https://prometheus.io/docs/prometheus/latest/querying/operators/) |
+| One-to-one / many-to-one примеры | [Operators — Vector matching](https://prometheus.io/docs/prometheus/latest/querying/operators/#vector-matching) |
+| Aggregation operators | [Operators — Aggregation](https://prometheus.io/docs/prometheus/latest/querying/operators/#aggregation-operators) |
+
+---
+
+## Блок 6. Алерты {#блок-6-алерты}
+
+## Что вы должны знать (шпаргалка лектора)
+
+| Вопрос | Короткий ответ |
+|--------|----------------|
+| Когда live? | **Блок 6** — стенд с `docker compose up` с блока 1, Alerts UI — только сейчас |
+| Алерт — это что? | PromQL + порог + `for`: «**нужно действие**», не график |
+| Pending vs Firing? | Pending — `for` не выдержан; Firing — действуй |
+| Alertmanager — зачем? | Группировка, routing → **Telegram** (бот через BotFather, без кода) |
+| Telegram на лекции? | Да: `lab/.env` + receiver `telegram` в AM; сообщение в группу после Firing |
+| «8 видов»? | Каталог симптомов **всей лекции**; на блоке 6 live — `HighCpu` + цепочка до Telegram |
+| Нагрузка для `HighCpu` | `stress-ng --cpu 0` (все ядра; `--cpu 2` ≈ 30–40%, порог 60% не пробить) |
+| После Spring | `HighHttpLatencyP95`, `HighHttp5xxRate` + load/k6 — тот же AM → Telegram |
+
+---
+
+## Спич
+
+### Переход (блок 6)
+
+С начала лекции стенд поднят **целиком**: Prometheus, Alertmanager, `alerts.yml` — rules **уже loaded**, состояние **Inactive**. Мы сознательно не открывали вкладку Alerts: сначала метрики, scrape, PromQL, Spring (Actuator и rules настраивали **вместе**). Сейчас — **механика сигнала**: график не будит дежурного, алерт — **контракт на действие**.
+
+---
+
+### Алерт ≠ dashboard
+
+**Dashboard** — «посмотрите, когда будет время». Полезен для расследования, трендов, post-mortem.
+
+**Alert** — «**сейчас** превышен порог, и это держится достаточно долго — **действуй**». Контракт с дежурной командой: не «интересная кривая», а «wake-up call».
+
+На инциденте «медленные заказы» хороший алерт описывает **симптом пользователя** — p95 latency вырос, доля 5xx выросла. Плохой алерт — «CPU 90%» без контекста HTTP: CPU может быть высоким, а пользователям нормально, и наоборот.
+
+**На блоке 6 (фаза 1 lab):** live — **механика** на CPU хоста (`HighCpu`). Если Spring уже подключён — приоритет live на **HTTP-симптомах** (`HighHttpLatencyP95`, `HighHttp5xxRate`): это и есть «медленные заказы».
+
+---
+
+### Анатомия alert rule
+
+Правила лежат в YAML, Prometheus подхватывает через `rule_files` в конфиге. Минимальный rule для нашего lab:
+
+```yaml
+groups:
+  - name: lab-host
+    rules:
+      - alert: HighCpu
+        expr: |
+          100 - (avg(irate(node_cpu_seconds_total{mode="idle",job="lab-host-node"}[1m])) * 100) > 60
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокая загрузка CPU на {{ $labels.instance }}"
+          description: "CPU > 60% более 1 минуты на job={{ $labels.job }}"
+```
+
+Разбор **каждого поля**:
+
+| Поле | Зачем |
+|------|--------|
+| `alert: HighCpu` | Имя правила — видно в UI Alerts и в Alertmanager |
+| `expr` | Условие на метриках. **Тот же PromQL**, что на вкладке Graph. True = «алерт потенциально сработает» |
+| `for: 1m` | Порог должен держаться **непрерывно** одну минуту. Защита от 10-секундного всплеска при деплое или GC |
+| `labels` | Метаданные для маршрутизации: `severity`, `team`, `service`. Alertmanager по ним решает, куда слать |
+| `annotations` | Текст **для человека**: summary в списке алертов, description как мини-runbook |
+
+Prometheus пересчитывает rules каждые `evaluation_interval` секунд (у нас 15s) — независимо от `scrape_interval`.
+
+---
+
+### Pending → Firing — что видим в UI
+
+Открываем http://localhost:9090 → **Alerts**.
+
+| Состояние | Что означает |
+|-----------|--------------|
+| **Inactive** | `expr` = false, всё спокойно |
+| **Pending** | `expr` = true, но `for` ещё **не выдержан** — «подозрение, ждём подтверждения» |
+| **Firing** | `expr` = true **непрерывно** в течение `for` — алерт **активен**, нужно действие |
+
+**Live-demo (блок 6) — полная цепочка:**
+
+1. **До лекции:** `cp lab/.env.example lab/.env` — token (@BotFather), `chat_id` группы; бот в группе; `docker compose up -d`; AM **Up**.
+2. Prometheus → **Alerts** — `HighCpu` **Inactive**.
+3. **Graph** → PromQL из rule — ниже 60%.
+4. `docker compose exec lab-host stress-ng --cpu 0 --timeout 120s` (все ядра; `--cpu 2` ≈ 30–40%, порог 60% не пробить).
+5. ~1 мин → **Pending**; ещё ~1 мин → **Firing**.
+6. Alertmanager → http://localhost:9093/#/alerts — тот же алерт (~10 с `group_wait`).
+7. **Telegram** — сообщение в группе (`summary` / `description` из rule).
+8. `docker compose exec lab-host pkill stress-ng` → **Resolved** в Telegram → Inactive.
+
+**Фраза для аудитории:** «Prometheus посчитал Firing → Alertmanager сгруппировал → Telegram Bot API. Код бота не писали — token и chat_id в `.env`».
+
+---
+
+### Recording rules — одна фраза на будущее
+
+Кроме **alert rules** есть **recording rules** — предпосчитать тяжёлый PromQL в новую метрику:
+
+```yaml
+- record: job:order_service:http_errors:rate5m
+  expr: |
+    sum(rate(http_server_requests_seconds_count{job="order-service",status=~"5.."}[5m]))
+    / clamp_min(sum(rate(http_server_requests_seconds_count{job="order-service"}[5m])), 0.001)
+```
+
+Alert потом ссылается на короткое имя: `job:order_service:http_errors:rate5m > 0.05`. На lab сейчас **не демонстрируем** — нужен `order-service`. Запомнить: recording = упростить expr; alert = порог + `for`.
+
+---
+
+### Alertmanager — что это и зачем отдельный сервис
+
+**Prometheus** умеет: собирать метрики, оценивать rules, показывать Alerts на `:9090`.
+
+**Alertmanager** — **отдельный процесс** (http://localhost:9093). Prometheus **передаёт** ему алерты в состоянии Firing.
+
+Зачем не хватить UI Prometheus:
+
+```text
+[Prometheus]  --expr + for-->  Pending → Firing
+      |
+      v
+[Alertmanager]  --route receiver: telegram-->
+      |
+      +--> UI :9093/alerts
+      |
+      v
+[Telegram Bot API]  -->  группа дежурных
+```
+
+| Задача | Кто |
+|--------|-----|
+| «Условие true 1 минуту?» | Prometheus |
+| «10 pod'ов — одно сообщение» | Alertmanager (группировка) |
+| «Critical подавляет warning» | Alertmanager (inhibition) |
+| «Silence на деплой» | Alertmanager UI |
+| **Доставка в мессенджер** | Alertmanager `telegram_configs` |
+
+**На лекции:** после Firing — AM UI **и** сообщение в Telegram. Бот создаётся у **@BotFather** (`/newbot`); **код писать не нужно** — Alertmanager сам вызывает Bot API.
+
+Секреты — в `lab/.env` (не в git); шаблон [lab/.env.example](../lab/.env.example). В [alertmanager.yml](../lab/prometheus/alertmanager.yml) — плейсхолдеры, compose подставляет при старте.
+
+```yaml
+# alertmanager.yml (фрагмент)
+route:
+  receiver: telegram
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token: '__TELEGRAM_BOT_TOKEN__'
+        chat_id: __TELEGRAM_CHAT_ID__
+        send_resolved: true
+        parse_mode: HTML
+```
+
+Конфиг Prometheus подключает AM:
+
+```yaml
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+```
+
+---
+
+### «8 видов» — каталог лекции, не live прямо сейчас
+
+В конспекте — **восемь классов симптомов** на всю лекцию 1. Это **roadmap**, а не «8 типов алертов в Prometheus». Prometheus знает только alert rules и recording rules; «классы» — наша педагогическая группировка по RED и инфраструктуре.
+
+| # | Класс | Rule | Что означает | Когда live |
+|---|-------|------|--------------|------------|
+| 1 | **Latency** | `HighHttpLatencyP95` | Пользователям **медленно** (p95 HTTP) | Блок 6 (+ `order-service`) |
+| 2 | **Errors** | `HighHttp5xxRate` | Много **ошибок** (доля 5xx) | Блок 6 (+ `order-service`) |
+| 3 | **Saturation** | `ConnectionPoolExhausted` | Ресурс **забит** (пул JDBC) | Блок 6 / ДЗ |
+| 4 | **JVM** | `HighJvmHeapUsed` | **Память** Java-процесса | Блок 6 / ДЗ |
+| 5 | **CPU** | `HighProcessCpu` | **CPU процесса** Java (не хоста) | Блок 6 / ДЗ |
+| 6 | **Availability** | `TargetDown` | Target **недоступен** (`up == 0`) | Блок 6 (учебно) |
+| 7 | **k6** | thresholds | **Не Prometheus alert** — pass/fail прогона в CI | Блок k6 |
+| 8 | **Composite** | `SLOErrorBudgetBurn` | **Комбинация** latency + errors (SLO) | ДЗ / финал |
+
+**Фаза 1 lab (без order-service):** на блоке 6 live — **`HighCpu`** на `node_*`. Строки 1–2 — приоритет, когда Spring уже в стенде.
+
+Строка 7 (k6 thresholds) — **отдельная история**, блок k6.
+
+Учебные дефекты в `order-service` (не чиним на лекции 1):
+
+| Дефект в коде | Алерт |
+|---------------|-------|
+| `Thread.sleep` в hot path | `HighHttpLatencyP95` |
+| flaky endpoint каждый 7-й запрос | `HighHttp5xxRate` |
+| Hikari pool = 2 | `ConnectionPoolExhausted` |
+| кэш без лимита | `HighJvmHeapUsed` |
+| `/cpu-burn` | `HighProcessCpu` |
+
+---
+
+### Симптом, не причина
+
+Хороший алерт отвечает на вопрос **«пользователю стало хуже?»**, а не «какой процент CPU?».
+
+- `HighHttpLatencyP95` — симптом: «на `/api/orders` p95 > порога».
+- `HighCpu` на node — **инфраструктурный** сигнал: «хост перегружен» — полезно, но не объясняет жалобу «медленные заказы» без HTTP-метрик.
+
+На инциденте смотрим **оба слоя**, если Node Exporter подключён: тормозит **код** (`http_server_requests_*`) или **хост** (`node_*`).
+
+**Демонстрационные пороги:** на lab порог 60% и `for: 1m` — **учебные**, чтобы увидеть Firing за пару минут. В проде пороги и `for` другие. Всегда проговаривать disclaimer.
+
+---
+
+### Хорошие практики vs антипаттерны
+
+| Хорошо | Плохо |
+|--------|-------|
+| Алерт на **симптом** (p95, error rate) | Алерт на всё подряд («CPU > 50%» без контекста) |
+| `for: 1m`–`5m` — фильтр шума | `for: 0` — alert fatigue на каждый всплеск |
+| `annotations` с runbook | Только имя rule без подсказки дежурному |
+| `labels.severity` для маршрутизации | Один канал Slack на все severity |
+| Один алерт — одна проблема | Composite без понимания базовых rules |
+
+---
+
+### Итого блока
+
+1. Метрики на Graph — **наблюдение**; алерт — **контракт на действие**.
+2. Rule = `expr` + `for` + `labels` + `annotations`; жизненный цикл: Inactive → Pending → Firing.
+3. **Alertmanager** — после Prometheus; UI `:9093` + **Telegram** через `telegram_configs`.
+4. **Полная цепочка demo:** `stress-ng --cpu 0` → Firing → AM → сообщение в группе → `pkill` → resolved.
+5. **8 классов** в конспекте — roadmap; фаза 1 lab — `HighCpu`; после Spring — HTTP-симптомы.
+6. k6 `thresholds` — **не** Prometheus alert; разберём в следующем блоке.
+
+---
+
+### Слайды (блок 6) — кратко
+
+**Alertmanager — функции**
+
+- Приём Firing от Prometheus
+- Группировка и dedup
+- Маршрутизация (у нас → Telegram)
+- Silence / mute
+
+**Demo — три экрана**
+
+1. Prometheus `:9090/alerts` — Pending → Firing  
+2. Alertmanager `:9093` — тот же алерт  
+3. Telegram — push от бота (без своего кода)
+
+**So what?** Дежурный получает сигнал там, где уже сидит — не обязан смотреть Grafana.
