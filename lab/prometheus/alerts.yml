@@ -1,10 +1,9 @@
-# конфиг для правил
+# конфиг для alert rules
 groups:
-  - name: lab-host # группа для lab-host
+  - name: lab-host-alerts # группа alert rules для lab-host
     rules:
       - alert: HighCpu # алерт для высокой загрузки CPU
-        expr: |
-          100 - (avg(irate(node_cpu_seconds_total{mode="idle",job="lab-host-node"}[1m])) * 100) > 60
+        expr: job:lab_host_node:node_cpu_idle:rate1m < 0.4 # idle < 40% = CPU > 60%
         for: 1m # как долго должна быть высокая загрузка CPU
         labels:
           severity: warning # severity алерта
@@ -12,6 +11,3 @@ groups:
         annotations:
           summary: "Высокая загрузка CPU на {{ $labels.instance }}" # summary для алерта
           description: "CPU > 60% более 1 минуты (job={{ $labels.job }})" # description для алерта
-
-
-

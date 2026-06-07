@@ -1076,7 +1076,7 @@ histogram_quantile(
 
 ### Переход (блок 6)
 
-С начала лекции стенд поднят **целиком**: Prometheus, Alertmanager, `alerts.yml` — rules **уже loaded**, состояние **Inactive**. Мы сознательно не открывали вкладку Alerts: сначала метрики, scrape, PromQL, Spring (Actuator и rules настраивали **вместе**). Сейчас — **механика сигнала**: график не будит дежурного, алерт — **контракт на действие**.
+С начала лекции стенд поднят **целиком**: Prometheus, Alertmanager, `rules.yml` + `alerts.yml` — rules **уже loaded**, состояние **Inactive**. Мы сознательно не открывали вкладку Alerts: сначала метрики, scrape, PromQL, Spring (Actuator и rules настраивали **вместе**). Сейчас — **механика сигнала**: график не будит дежурного, алерт — **контракт на действие**.
 
 ---
 
@@ -1092,17 +1092,38 @@ histogram_quantile(
 
 ---
 
-### Анатомия alert rule
+### Анатомия rules: recording + alert
 
-Правила лежат в YAML, Prometheus подхватывает через `rule_files` в конфиге. Минимальный rule для нашего lab:
+Правила лежат в YAML, Prometheus подхватывает через `rule_files`. На lab — **два файла**: recording отдельно от alerting.
+
+**`rules.yml`** — recording rule, предрасчёт PromQL в метрику:
 
 ```yaml
 groups:
-  - name: lab-host
+  - name: lab-host-recording
+    rules:
+      - record: job:lab_host_node:node_cpu_idle:rate1m
+        expr: |
+          avg without(cpu) (rate(node_cpu_seconds_total{mode="idle", job="lab-host-node"}[1m]))
+        labels:
+          service: lab-host
+```
+
+| Элемент expr | Зачем |
+|--------------|--------|
+| `rate(...[1m])` | Скорость counter за 1 мин; на lab — быстрее live-demo, чем `[5m]` |
+| `avg without(cpu)` | Среднее по ядрам; label `cpu` убирается — одна серия на instance |
+| `mode="idle"` | Доля idle (0…1); при нагрузке падает |
+| `record: job:lab_host_node:node_cpu_idle:rate1m` | Именование `level:entity:metric:aggregation` — как `job:order_service:http_errors:rate5m` |
+
+**`alerts.yml`** — alert rule, порог + `for`:
+
+```yaml
+groups:
+  - name: lab-host-alerts
     rules:
       - alert: HighCpu
-        expr: |
-          100 - (avg(irate(node_cpu_seconds_total{mode="idle",job="lab-host-node"}[1m])) * 100) > 60
+        expr: job:lab_host_node:node_cpu_idle:rate1m < 0.4
         for: 1m
         labels:
           severity: warning
@@ -1111,21 +1132,44 @@ groups:
           description: "CPU > 60% более 1 минуты на job={{ $labels.job }}"
 ```
 
-Разбор **каждого поля**:
+Разбор **полей alert rule**:
 
 | Поле | Зачем |
 |------|--------|
 | `alert: HighCpu` | Имя правила — видно в UI Alerts и в Alertmanager |
-| `expr` | Условие на метриках. **Тот же PromQL**, что на вкладке Graph. True = «алерт потенциально сработает» |
-| `for: 1m` | Порог должен держаться **непрерывно** одну минуту. Защита от 10-секундного всплеска при деплое или GC |
-| `labels` | Метаданные для маршрутизации: `severity`, `team`, `service`. Alertmanager по ним решает, куда слать |
-| `annotations` | Текст **для человека**: summary в списке алертов, description как мини-runbook |
+| `expr` | Условие на recording metric: idle < 0.4 (= CPU > 60%) |
+| `for: 1m` | Порог держится **непрерывно** одну минуту — защита от короткого всплеска |
+| `labels` | Маршрутизация в Alertmanager: `severity`, `service` |
+| `annotations` | Текст для человека: summary, description как мини-runbook |
 
 Prometheus пересчитывает rules каждые `evaluation_interval` секунд (у нас 15s) — независимо от `scrape_interval`.
+
+**Graph:** `job:lab_host_node:node_cpu_idle:rate1m` (~0.9–1.0 в покое); «% CPU»: `(1 - job:lab_host_node:node_cpu_idle:rate1m) * 100`.
+
+---
+
+### Как применить rules без перезапуска Prometheus
+
+Отредактировали `rules.yml` или `alerts.yml` на диске. Файлы смонтированы volume — внутри контейнера обновляются сразу. Restart **не нужен**, если в compose включён `--web.enable-lifecycle` (у нас уже есть).
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+Prometheus перечитает `prometheus.yml` и все `rule_files`. TSDB и история метрик **не сбрасываются**. Проверка: **Status → Configuration** (success) и **Status → Rules** — новые rules на месте. Ошибка YAML — `docker compose logs prometheus`.
+
+Альтернатива: `docker compose exec prometheus kill -HUP 1` — тот же SIGHUP-reload. Restart контейнера — только при смене CLI-флагов в compose или образа.
+
+**Live-момент (опционально):** изменить порог alert с `< 0.4` на `< 0.3`, `curl …/-/reload` — без restart.
 
 ---
 
 ### Pending → Firing — что видим в UI
+
+| UI | Что показывает |
+|----|----------------|
+| **Status → Rules** | **Определения**: expr, тип (recording / alerting), файл (`rules.yml` / `alerts.yml`) |
+| **Alerts** | **Состояние** alert rules: Inactive / Pending / Firing |
 
 Открываем http://localhost:9090 → **Alerts**.
 
@@ -1138,21 +1182,26 @@ Prometheus пересчитывает rules каждые `evaluation_interval` �
 **Live-demo (блок 6) — полная цепочка:**
 
 1. **До лекции:** `cp lab/.env.example lab/.env` — token (@BotFather), `chat_id` группы; бот в группе; `docker compose up -d`; AM **Up**.
-2. Prometheus → **Alerts** — `HighCpu` **Inactive**.
-3. **Graph** → PromQL из rule — ниже 60%.
-4. `docker compose exec lab-host stress-ng --cpu 0 --timeout 120s` (все ядра; `--cpu 2` ≈ 30–40%, порог 60% не пробить).
-5. ~1 мин → **Pending**; ещё ~1 мин → **Firing**.
-6. Alertmanager → http://localhost:9093/#/alerts — тот же алерт (~10 с `group_wait`).
-7. **Telegram** — сообщение в группе (`summary` / `description` из rule).
-8. `docker compose exec lab-host pkill stress-ng` → **Resolved** в Telegram → Inactive.
+2. Prometheus → **Status → Rules** — `node_cpu_idle:rate1m` (recording), `HighCpu` (alerting).
+3. Prometheus → **Alerts** — `HighCpu` **Inactive**.
+4. **Graph** → `job:lab_host_node:node_cpu_idle:rate1m` — idle выше 0.4 (CPU ниже 60%).
+5. `docker compose exec lab-host stress-ng --cpu 0 --timeout 120s` (все ядра; `--cpu 2` ≈ 30–40%, порог 60% не пробить).
+6. ~1 мин → **Pending**; ещё ~1 мин → **Firing**.
+7. Alertmanager → http://localhost:9093/#/alerts — тот же алерт (~10 с `group_wait`).
+8. **Telegram** — сообщение в группе (`summary` / `description` из rule).
+9. `docker compose exec lab-host pkill stress-ng` → **Resolved** в Telegram → Inactive.
 
 **Фраза для аудитории:** «Prometheus посчитал Firing → Alertmanager сгруппировал → Telegram Bot API. Код бота не писали — token и chat_id в `.env`».
 
 ---
 
-### Recording rules — одна фраза на будущее
+### Recording rules — зачем отдельный файл
 
-Кроме **alert rules** есть **recording rules** — предпосчитать тяжёлый PromQL в новую метрику:
+**Recording rule** — предпосчитать PromQL в новую метрику. **Alert rule** — порог + `for` на коротком имени.
+
+На lab recording в [`rules.yml`](../lab/prometheus/rules.yml), alert в [`alerts.yml`](../lab/prometheus/alerts.yml). В production часто так же: тяжёлые expr в `rules.yml`, пороги в `alerts.yml`.
+
+Пример для `order-service` (фаза 2):
 
 ```yaml
 - record: job:order_service:http_errors:rate5m
@@ -1161,7 +1210,7 @@ Prometheus пересчитывает rules каждые `evaluation_interval` �
     / clamp_min(sum(rate(http_server_requests_seconds_count{job="order-service"}[5m])), 0.001)
 ```
 
-Alert потом ссылается на короткое имя: `job:order_service:http_errors:rate5m > 0.05`. На lab сейчас **не демонстрируем** — нужен `order-service`. Запомнить: recording = упростить expr; alert = порог + `for`.
+Alert: `job:order_service:http_errors:rate5m > 0.05`. Запомнить: **recording = упростить expr; alert = порог + `for`**.
 
 ---
 
@@ -1220,6 +1269,7 @@ alerting:
         - targets: ["alertmanager:9093"]
 
 rule_files:
+  - /etc/prometheus/rules.yml
   - /etc/prometheus/alerts.yml
 ```
 
@@ -1301,10 +1351,11 @@ rule_files:
 - Маршрутизация (у нас → Telegram)
 - Silence / mute
 
-**Demo — три экрана**
+**Demo — четыре экрана**
 
-1. Prometheus `:9090/alerts` — Pending → Firing  
-2. Alertmanager `:9093` — тот же алерт  
-3. Telegram — push от бота (без своего кода)
+1. Prometheus **Status → Rules** — `rules.yml` (recording) + `alerts.yml` (alerting)  
+2. Prometheus `:9090/alerts` — Pending → Firing  
+3. Alertmanager `:9093` — тот же алерт  
+4. Telegram — push от бота (без своего кода)
 
 **So what?** Дежурный получает сигнал там, где уже сидит — не обязан смотреть Grafana.

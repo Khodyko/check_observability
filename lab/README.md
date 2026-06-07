@@ -2,7 +2,7 @@
 
 ## Фаза 1: Prometheus + Alertmanager + Ubuntu (Node Exporter)
 
-Стенд поднимается **целиком одной командой**: scrape, `alerts.yml`, Alertmanager — всё включено с первого `docker compose up`. **Live-демо алертов** (Pending → Firing) — **блок 6** лекции, не сразу после lab.
+Стенд поднимается **целиком одной командой**: scrape, `rules.yml`, `alerts.yml`, Alertmanager — всё включено с первого `docker compose up`. **Live-демо алертов** (Pending → Firing) — **блок 6** лекции, не сразу после lab.
 
 | Сервис | URL |
 |--------|-----|
@@ -21,8 +21,18 @@ docker compose up -d --build
 
 1. `docker compose ps` — три сервиса: `observability-prometheus`, `observability-alertmanager`, `observability-lab-host`.
 2. Prometheus → **Status → Targets** — job `lab-host-node` в состоянии **UP**.
-3. (Опционально, одной фразой) **Status → Rules** — rules loaded, алерты **Inactive** — «вернёмся на блоке 6».
-4. **Graph** — PromQL загрузки CPU:
+3. (Опционально, одной фразой) **Status → Rules** — два файла: `rules.yml` (Type: **recording**), `alerts.yml` (Type: **alerting**); алерт **Inactive** — «вернёмся на блоке 6».
+4. **Graph** — recording metric или «% CPU»:
+
+```promql
+job:lab_host_node:node_cpu_idle:rate1m
+```
+
+```promql
+(1 - job:lab_host_node:node_cpu_idle:rate1m) * 100
+```
+
+Ручной расчёт до recording rule (блок PromQL):
 
 ```promql
 100 - (avg(irate(node_cpu_seconds_total{mode="idle",job="lab-host-node"}[30s])) * 100)
@@ -45,6 +55,7 @@ docker compose exec lab-host stress-ng --cpu 0 --timeout 120s
 
 | # | Где | Что видим |
 |---|-----|-----------|
+| 0 | Prometheus → **Status → Rules** | `node_cpu_idle:rate1m` (recording), `HighCpu` (alerting) |
 | 1 | Prometheus → **Alerts** | Pending → Firing (~2 мин) |
 | 2 | Alertmanager → `:9093/alerts` | Тот же алерт |
 | 3 | **Telegram** | Сообщение от бота |
@@ -72,7 +83,8 @@ lab/
 ├── docker-compose.yml
 ├── prometheus/
 │   ├── prometheus.yml       # scrape + rule_files + alerting
-│   ├── alerts.yml           # rules (HighCpu; позже HTTP)
+│   ├── rules.yml            # recording rules
+│   ├── alerts.yml           # alert rules (HighCpu; позже HTTP)
 │   └── alertmanager.yml     # route → telegram; секреты из .env
 └── ubuntu-host/Dockerfile   # Ubuntu 22.04 + node_exporter + stress-ng
 ```
@@ -93,6 +105,16 @@ curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" 
 ```
 
 Token **не коммитить** — только `lab/.env`.
+
+### Применение изменений rules (hot reload)
+
+После правки `rules.yml`, `alerts.yml` или `prometheus.yml` на хосте — **без restart** контейнера (в compose уже `--web.enable-lifecycle`):
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+Проверка: **Status → Configuration** (success) и **Status → Rules**. TSDB и история метрик не сбрасываются. При ошибке YAML — `docker compose logs prometheus`. Restart — только если меняли CLI-флаги в compose или образ.
 
 ### Фаза 2 (планируется)
 

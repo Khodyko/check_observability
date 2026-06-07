@@ -1,0 +1,10 @@
+# recording rules — предрасчёт PromQL в новые метрики
+# именование: level:entity:metric:aggregation (см. job:order_service:http_errors:rate5m)
+groups:
+  - name: lab-host-recording
+    rules:
+      - record: job:lab_host_node:node_cpu_idle:rate1m
+        expr: |
+          avg without(cpu) (rate(node_cpu_seconds_total{mode="idle", job="lab-host-node"}[1m]))
+        labels:
+          service: lab-host
