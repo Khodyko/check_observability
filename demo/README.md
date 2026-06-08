@@ -37,7 +37,7 @@ docker compose up -d
 
 ### 2. k6-test-app на хосте (Maven)
 
-Требуется **Java 21**. Maven wrapper в каталоге (`mvnw`).
+Требуется **Java 25**. Maven wrapper в каталоге (`mvnw`).
 
 ```bash
 cd demo/app

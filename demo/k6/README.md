@@ -31,16 +31,48 @@ source .env
 | `LOAD_HOST` | хост SUT (`localhost:8080`) |
 | `TESTID` | label для фильтра в Grafana/PromQL |
 | `K6_PROMETHEUS_RW_SERVER_URL` | push метрик k6 → Prometheus |
+| `SOAK_HOLD_DURATION` | длительность плато soak (дефолт `30m`) |
+| `AUTH_USER` / `AUTH_PASS` | учётные данные для `auth/auth-demo.js` (дефолт `demo`/`demo`) |
+
+## Типы нагрузочных проверок
+
+| Тип | Файл | Профиль | На лекции |
+|-----|------|---------|-----------|
+| **Smoke** | `tests/smoke.js` | 2 VU, 10s, sleep 1s | да |
+| **Load** | `tests/load.js` | 0→20 за 1m, hold 5m, sleep 1s | да |
+| **Stress** | `tests/stress.js` | ступени 10→60 VU, по 1m, sleep 1s | по времени |
+| **Spike** | `tests/spike.js` | 5 → 50 за 10s → 5 VU, sleep 1s | да |
+| **Soak** | `tests/soak.js` | hold 15 VU, 30m, sleep 1s | **нет** |
+| **Auth** | `tests/auth/auth-demo.js` | 2 VU, 30s, sleep 1s | да (отдельный блок) |
+
+Каждый файл самодостаточен: `options` + HTTP-логика в одном месте (thresholds — где нужны для нагрузочных типов).
 
 ## Запуск с push в Prometheus
 
 ```bash
 export LOAD_HOST='localhost:8080'
-export TESTID='all-endpoints-200'
 export K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9091/api/v1/write
 
-k6 run -o experimental-prometheus-rw \
-  tests/test_me_all_endpoints_200/test_me_all_endpoints_200-1.js
+# Smoke (~10s)
+export TESTID='smoke'
+k6 run -o experimental-prometheus-rw tests/smoke.js
+
+# Load (~6.5 min)
+export TESTID='load'
+k6 run -o experimental-prometheus-rw tests/load.js
+
+# Spike (~3 min)
+export TESTID='spike'
+k6 run -o experimental-prometheus-rw tests/spike.js
+
+# Auth demo (~30s) — отдельно от нагрузочных тестов
+export TESTID='auth-demo'
+k6 run -o experimental-prometheus-rw tests/auth/auth-demo.js
+
+# Soak (30m по умолчанию, на лекции не запускаем)
+export TESTID='soak'
+export SOAK_HOLD_DURATION=30m
+k6 run -o experimental-prometheus-rw tests/soak.js
 ```
 
 Через Docker (если k6 не установлен на хосте):
@@ -48,28 +80,33 @@ k6 run -o experimental-prometheus-rw \
 ```bash
 docker run --rm --network host \
   -e LOAD_HOST=localhost:8080 \
-  -e TESTID=all-endpoints-200 \
+  -e TESTID=smoke \
   -e K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9091/api/v1/write \
   -v "$(pwd):/scripts" grafana/k6:latest run -o experimental-prometheus-rw \
-  /scripts/tests/test_me_all_endpoints_200/test_me_all_endpoints_200-1.js
-```
-
-Сценарий с ошибками (4xx/5xx):
-
-```bash
-export TESTID='with-errors'
-k6 run -o experimental-prometheus-rw \
-  tests/test_me_all_endpoints_with_errors/test_me_all_endpoints_with_errors-1.js
+  /scripts/tests/smoke.js
 ```
 
 ## Структура tests/
 
+```text
+tests/
+├── common.js
+├── smoke.js, load.js, stress.js, spike.js, soak.js
+├── auth/
+│   ├── auth.js        # helper: login(), getAuthHeaders()
+│   └── auth-demo.js   # демо Bearer-аутентификации
+├── simpleCall/                          # legacy
+├── test_me_all_endpoints_200/           # legacy
+└── test_me_all_endpoints_with_errors/   # legacy
+```
+
+## Legacy-скрипты
+
 | Скрипт | Назначение |
 |--------|------------|
-| `test_me_all_endpoints_200/*` | все endpoint'ы, ожидаем 200, ramp 1→15 VU |
+| `test_me_all_endpoints_200/*` | все endpoint'ы, ramp 1→15 VU |
 | `test_me_all_endpoints_with_errors/*` | GET `mode=2/3` для демо error rate |
-
-Паттерн: `*-1.js` — профиль нагрузки, `*.js` — HTTP-логика.
+| `simpleCall/*` | простой вызов `/api/fast` |
 
 ## Отличие от референса
 
