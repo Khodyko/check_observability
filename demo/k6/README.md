@@ -44,6 +44,7 @@ source .env
 | **Spike** | `tests/spike.js` | 5 → 50 за 10s → 5 VU, sleep 1s | да |
 | **Soak** | `tests/soak.js` | hold 15 VU, 30m, sleep 1s | **нет** |
 | **Auth** | `tests/auth/auth-demo.js` | 2 VU, 30s, sleep 1s | да (отдельный блок) |
+| **Custom metric** | `tests/custom-metric/custom-metric-demo.js` | 1 VU, 10s, Counter `my_counter` | по времени |
 
 Каждый файл самодостаточен: `options` + HTTP-логика в одном месте (thresholds — где нужны для нагрузочных типов).
 
@@ -68,6 +69,10 @@ k6 run -o experimental-prometheus-rw tests/spike.js
 # Auth demo (~30s) — отдельно от нагрузочных тестов
 export TESTID='auth-demo'
 k6 run -o experimental-prometheus-rw tests/auth/auth-demo.js
+
+# Custom metric (~10s)
+export TESTID='custom-metric'
+k6 run -o experimental-prometheus-rw tests/custom-metric/custom-metric-demo.js
 
 # Soak (30m по умолчанию, на лекции не запускаем)
 export TESTID='soak'
@@ -95,6 +100,8 @@ tests/
 ├── auth/
 │   ├── auth.js        # helper: login(), getAuthHeaders()
 │   └── auth-demo.js   # демо Bearer-аутентификации
+├── custom-metric/
+│   └── custom-metric-demo.js   # Counter my_counter + HTTP
 ├── simpleCall/                          # legacy
 ├── test_me_all_endpoints_200/           # legacy
 └── test_me_all_endpoints_with_errors/   # legacy

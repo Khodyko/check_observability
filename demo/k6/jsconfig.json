@@ -1,0 +1,11 @@
+// Только для подсветки синтаксиса и IntelliSense в IDE (Go to Definition, автодополнение).
+// На запуск тестов не влияет — скрипты выполняет stock k6: k6 run tests/...
+{
+  "compilerOptions": {
+    "target": "es6",
+    "module": "es6",
+    "moduleResolution": "node",
+    "types": ["k6"]
+  },
+  "include": ["tests/**/*.js"]
+}

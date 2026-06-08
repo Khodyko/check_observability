@@ -1,0 +1,9 @@
+{
+  "//": "Только для подсветки и автодополнения в IDE (@types/k6). Запуск тестов — stock k6, не npm.",
+  "name": "k6-demo",
+  "private": true,
+  "description": "Типы k6 для IDE (IntelliSense). Рантайм — stock k6, npm install не обязателен для k6 run.",
+  "devDependencies": {
+    "@types/k6": "^2.0.0"
+  }
+}
