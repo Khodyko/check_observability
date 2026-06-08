@@ -3,7 +3,7 @@ import { check, sleep } from 'k6';
 import { BASE_URL } from './common.js';
 
 // Spike: резкий скачок трафика
-// k6 run -o experimental-prometheus-rw tests/spike.js
+// cd demo/k6/tests && k6 run -o experimental-prometheus-rw spike.js
 
 export const options = {
   tags: { testid: __ENV.TESTID || 'spike' },

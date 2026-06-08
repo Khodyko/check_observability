@@ -150,16 +150,27 @@
   "templating": {
     "list": [
       {
-        "current": { "selected": true, "text": "all-endpoints-200", "value": "all-endpoints-200" },
+        "current": { "selected": true, "text": "smoke", "value": "smoke" },
         "hide": 0,
         "label": "testid",
         "name": "testid",
         "options": [
-          { "selected": true, "text": "all-endpoints-200", "value": "all-endpoints-200" },
+          { "selected": false, "text": "simple", "value": "simple" },
+          { "selected": false, "text": "checks", "value": "checks" },
+          { "selected": true, "text": "smoke", "value": "smoke" },
+          { "selected": false, "text": "load", "value": "load" },
+          { "selected": false, "text": "spike", "value": "spike" },
+          { "selected": false, "text": "stress", "value": "stress" },
+          { "selected": false, "text": "soak", "value": "soak" },
+          { "selected": false, "text": "auth-demo", "value": "auth-demo" },
+          { "selected": false, "text": "custom-metric", "value": "custom-metric" },
+          { "selected": false, "text": "tag", "value": "tag" },
+          { "selected": false, "text": "group", "value": "group" },
+          { "selected": false, "text": "all-endpoints-200", "value": "all-endpoints-200" },
           { "selected": false, "text": "with-errors", "value": "with-errors" },
           { "selected": false, "text": "lecture1-demo", "value": "lecture1-demo" }
         ],
-        "query": "all-endpoints-200,with-errors,lecture1-demo",
+        "query": "simple,checks,smoke,load,spike,stress,soak,auth-demo,custom-metric,tag,group,all-endpoints-200,with-errors,lecture1-demo",
         "type": "custom"
       }
     ]

@@ -3,7 +3,7 @@ import { check, sleep } from 'k6';
 import { BASE_URL, POST_PARAMS } from './common.js';
 
 // Soak: долго, умеренно — утечки, дрейф (на лекции не показываем)
-// k6 run -o experimental-prometheus-rw tests/soak.js
+// cd demo/k6/tests && k6 run -o experimental-prometheus-rw soak.js
 
 const soakHold = __ENV.SOAK_HOLD_DURATION || '30m';
 

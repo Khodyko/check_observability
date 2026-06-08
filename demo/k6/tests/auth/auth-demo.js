@@ -4,7 +4,7 @@ import { BASE_URL } from '../common.js';
 import { login, getAuthHeaders } from './auth.js';
 
 // Auth demo: login → Bearer → 200, без токена → 401
-// k6 run -o experimental-prometheus-rw tests/auth/auth-demo.js
+// cd demo/k6/tests/auth && k6 run -o experimental-prometheus-rw auth-demo.js
 
 export const options = {
   tags: { testid: __ENV.TESTID || 'auth-demo' },

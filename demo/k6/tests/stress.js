@@ -3,7 +3,7 @@ import { check, sleep } from 'k6';
 import { BASE_URL, POST_PARAMS } from './common.js';
 
 // Stress: выше нормы — где деградация
-// k6 run -o experimental-prometheus-rw tests/stress.js
+// cd demo/k6/tests && k6 run -o experimental-prometheus-rw stress.js
 
 export const options = {
   tags: { testid: __ENV.TESTID || 'stress' },

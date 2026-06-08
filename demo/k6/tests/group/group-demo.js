@@ -3,9 +3,10 @@ import { group } from 'k6';
 import { BASE_URL } from '../common.js';
 
 // Groups: логические блоки с отдельными group_duration-метриками
-// k6 run -o experimental-prometheus-rw tests/group/group-demo.js
+// cd demo/k6/tests/group && k6 run -o experimental-prometheus-rw group-demo.js
 
 export const options = {
+  tags: { testid: __ENV.TESTID || 'group' },
   vus: 1,
   duration: '10s',
   thresholds: {

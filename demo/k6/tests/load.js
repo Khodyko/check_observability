@@ -3,13 +3,13 @@ import { check, sleep } from 'k6';
 import { BASE_URL, POST_PARAMS } from './common.js';
 
 // Load: ожидаемая нагрузка, стабильная работа
-// k6 run -o experimental-prometheus-rw tests/load.js
+// cd demo/k6/tests && k6 run -o experimental-prometheus-rw load.js
 
 export const options = {
   tags: { testid: __ENV.TESTID || 'load' },
   stages: [
     { duration: '1m', target: 20 },
-    { duration: '5m', target: 20 },
+    { duration: '30s', target: 40 },
     { duration: '30s', target: 0 },
   ],
   thresholds: {

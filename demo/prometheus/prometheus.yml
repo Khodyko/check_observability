@@ -11,7 +11,7 @@ scrape_configs:
     scrape_interval: 10s
     metrics_path: /actuator/prometheus
     static_configs:
-      # k6-test-app на хосте: ./mvnw spring-boot:run в demo/app
+      # Приложение на хосте (localhost:8080); host.docker.internal — адрес хоста из контейнера Prometheus
       - targets: ["host.docker.internal:8080"]
         labels:
           env: demo
