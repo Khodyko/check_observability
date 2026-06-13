@@ -42,12 +42,27 @@ job:lab_host_node:node_cpu_idle:rate1m
 
 **Не открываем на ранних блоках:** вкладку **Alerts**, Alertmanager UI, live Pending/Firing.
 
+### Telegram (блок 6)
+
+```bash
+cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+docker compose up -d alertmanager
+```
+
+Бот (@BotFather) **в группе**. Проверка:
+
+```bash
+source .env
+curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=Alertmanager test"
+```
+
+Token **не коммитить** — только `lab/.env`.
+
 ### Live-дemo алертов + Telegram (блок 6)
 
 Runbook: [docs/practical-scenarios.md](../docs/practical-scenarios.md) — **Сценарий 6**.  
 Спич: [docs/talk-speech-block-1-alerts.md](../docs/talk-speech-block-1-alerts.md).
-
-**Подготовка:** `cp .env.example .env` — token и chat_id; бот в группе; `docker compose up -d`.
 
 ```bash
 docker compose exec lab-host stress-ng --cpu 0 --timeout 120s
@@ -61,7 +76,81 @@ docker compose exec lab-host stress-ng --cpu 0 --timeout 120s
 | 3 | **Telegram** | Сообщение от бота |
 | 4 | `pkill stress-ng` | Resolved в Telegram |
 
+```bash
+docker compose exec lab-host pkill stress-ng
+```
+
 **Типично:** `--cpu 2` даёт ~30–40% — порог 60% не пробить; нужен `--cpu 0`. AM должен быть **Up** (`route.receiver: telegram`).
+
+### Сценарий: hot reload (`--web.enable-lifecycle`)
+
+**После блока 6:** нагрузка снята (`pkill stress-ng`), алерт **Inactive**, сообщение в Telegram получено. Команды ниже — из каталога `lab/`.
+
+Флаг `--web.enable-lifecycle` в compose включает endpoint `POST /-/reload`: Prometheus перечитывает `prometheus.yml` и `rule_files` **без restart** контейнера. TSDB и история метрик не сбрасываются.
+
+Демо: меняем порог alert `HighCpu` в `prometheus/alerts.yml` и смотрим, как expr обновляется в **Status → Rules**.
+
+| После шага | Status → Rules (`HighCpu` expr) |
+|------------|----------------------------------|
+| 1 | `< 0.4` |
+| 2 (до reload) | `< 0.4` (файл уже `< 0.7`, Prometheus не перечитал) |
+| 3 | `< 0.7` |
+| 4 | `< 0.4` |
+
+#### 1. Исходное состояние
+
+Prometheus → **Status → Rules** → `HighCpu` — expr: `… < 0.4`.
+
+#### 2. Правка порога на диске (без reload)
+
+Файл на хосте и в контейнере — один и тот же (volume `./prometheus` → `/etc/prometheus`):
+
+```bash
+cat prometheus/alerts.yml
+docker compose exec prometheus cat /etc/prometheus/alerts.yml
+```
+
+Зайти в контейнер Prometheus (образ без `bash`, только `sh`):
+
+```bash
+docker compose exec -it prometheus sh
+# cat /etc/prometheus/alerts.yml
+# exit
+```
+
+Меняем порог:
+
+```bash
+sed -i 's/< 0.4/< 0.7/' prometheus/alerts.yml
+sed -i 's/CPU > 60%/CPU > 30%/' prometheus/alerts.yml
+grep 'expr:' prometheus/alerts.yml
+docker compose exec prometheus grep 'expr:' /etc/prometheus/alerts.yml
+```
+
+> `prometheus/` смонтирован в контейнер как каталог (см. `docker-compose.yml`) — иначе `sed -i` на одном файле ломает bind mount, и reload не подхватит изменения.
+
+На диске уже `< 0.7`. Обновите **Status → Rules** в браузере — expr **ещё `< 0.4`**.
+
+#### 3. Hot reload
+
+```bash
+curl -s -o /dev/null -w "HTTP %{http_code}\n" -X POST http://localhost:9090/-/reload
+```
+
+**Status → Configuration** — success. **Status → Rules** → `HighCpu` — expr **`< 0.7`**, description «CPU > 30%…».
+
+#### 4. Откат
+
+```bash
+sed -i 's/< 0.7/< 0.4/' prometheus/alerts.yml
+sed -i 's/CPU > 30%/CPU > 60%/' prometheus/alerts.yml
+curl -s -o /dev/null -w "HTTP %{http_code}\n" -X POST http://localhost:9090/-/reload
+grep 'expr:' prometheus/alerts.yml
+```
+
+**Status → Rules** — снова `< 0.4`.
+
+Restart контейнера нужен только при смене CLI-флагов в compose или образа Prometheus.
 
 ### Остановка
 
@@ -88,33 +177,6 @@ lab/
 │   └── alertmanager.yml     # route → telegram; секреты из .env
 └── ubuntu-host/Dockerfile   # Ubuntu 22.04 + node_exporter + stress-ng
 ```
-
-### Telegram (блок 6)
-
-```bash
-cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-docker compose up -d alertmanager
-```
-
-Бот (@BotFather) **в группе**. Проверка:
-
-```bash
-source .env
-curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=Alertmanager test"
-```
-
-Token **не коммитить** — только `lab/.env`.
-
-### Применение изменений rules (hot reload)
-
-После правки `rules.yml`, `alerts.yml` или `prometheus.yml` на хосте — **без restart** контейнера (в compose уже `--web.enable-lifecycle`):
-
-```bash
-curl -X POST http://localhost:9090/-/reload
-```
-
-Проверка: **Status → Configuration** (success) и **Status → Rules**. TSDB и история метрик не сбрасываются. При ошибке YAML — `docker compose logs prometheus`. Restart — только если меняли CLI-флаги в compose или образ.
 
 ### Фаза 2 (планируется)
 

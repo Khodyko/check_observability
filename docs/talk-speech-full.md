@@ -1202,22 +1202,6 @@ Prometheus пересчитывает rules каждые `evaluation_interval` �
 
 ---
 
-### Как применить rules без перезапуска Prometheus
-
-Отредактировали `rules.yml` или `alerts.yml` на диске. Файлы смонтированы volume — внутри контейнера обновляются сразу. Restart **не нужен**, если в compose включён `--web.enable-lifecycle` (у нас уже есть).
-
-```bash
-curl -X POST http://localhost:9090/-/reload
-```
-
-Prometheus перечитает `prometheus.yml` и все `rule_files`. TSDB и история метрик **не сбрасываются**. Проверка: **Status → Configuration** (success) и **Status → Rules** — новые rules на месте. Ошибка YAML — `docker compose logs prometheus`.
-
-Альтернатива: `docker compose exec prometheus kill -HUP 1` — тот же SIGHUP-reload. Restart контейнера — только при смене CLI-флагов в compose или образа.
-
-**Live-момент (опционально):** изменить порог alert с `< 0.4` на `< 0.3`, `curl …/-/reload` — без restart.
-
----
-
 ### Pending → Firing — что видим в UI
 
 
@@ -1250,6 +1234,24 @@ Prometheus перечитает `prometheus.yml` и все `rule_files`. TSDB и
 9. `docker compose exec lab-host pkill stress-ng` → **Resolved** в Telegram → Inactive.
 
 **Фраза для аудитории:** «Prometheus посчитал Firing → Alertmanager сгруппировал → Telegram Bot API. Код бота не писали — token и chat_id в `.env`».
+
+---
+
+### Как применить rules без перезапуска Prometheus
+
+**После** live-demo: нагрузка снята, алерт Inactive, Telegram получен — показываем hot reload.
+
+Отредактировали `rules.yml` или `alerts.yml` на диске. Файлы смонтированы volume — внутри контейнера обновляются сразу. Restart **не нужен**, если в compose включён `--web.enable-lifecycle` (у нас уже есть).
+
+```bash
+curl -X POST http://localhost:9090/-/reload
+```
+
+Prometheus перечитает `prometheus.yml` и все `rule_files`. TSDB и история метрик **не сбрасываются**. Проверка: **Status → Configuration** (success) и **Status → Rules** — новые rules на месте. Ошибка YAML — `docker compose logs prometheus`.
+
+Альтернатива: `docker compose exec prometheus kill -HUP 1` — тот же SIGHUP-reload. Restart контейнера — только при смене CLI-флагов в compose или образа.
+
+**Live-момент:** пошаговый runbook с bash-блоками — [lab/README.md — hot reload](../lab/README.md#сценарий-hot-reload-webenable-lifecycle): `sed` меняет порог `HighCpu` (`< 0.4` → `< 0.7`), `curl …/-/reload`, в **Status → Rules** видим новый expr — без restart.
 
 ---
 

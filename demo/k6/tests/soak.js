@@ -10,7 +10,7 @@ const soakHold = __ENV.SOAK_HOLD_DURATION || '30m';
 export const options = {
   tags: { testid: __ENV.TESTID || 'soak' },
   stages: [
-    { duration: '2m', target: 15 },
+    { duration: '5s', target: 15 },
     { duration: soakHold, target: 15 },
     { duration: '1m', target: 0 },
   ],

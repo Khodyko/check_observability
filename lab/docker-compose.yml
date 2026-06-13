@@ -5,9 +5,8 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
-      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # Каталог целиком: sed -i на хосте не ломает bind mount (в отличие от mount одного файла)
+      - ./prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
