@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { Counter } from 'k6/metrics';
 import { BASE_URL } from '../common.js';
 
-// Custom metric: Counter my_counter → Prometheus (k6_my_counter)
+// Custom metric: Counter my_counter → Prometheus (k6_my_counter_total)
 // cd demo/k6/tests/custom-metric && k6 run -o experimental-prometheus-rw custom-metric-demo.js
 
 const myCounter = new Counter('my_counter');

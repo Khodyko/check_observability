@@ -190,6 +190,12 @@ cd k6/tests/custom-metric
 k6 run -o experimental-prometheus-rw custom-metric-demo.js
 ```
 
+Prometheus (http://localhost:9091) → **Graph** → **Last 5 minutes**:
+
+```promql
+k6_my_counter_total{testid="custom-metric"}
+```
+
 **10. tag.js**
 
 ```bash
@@ -308,13 +314,13 @@ thresholds: {
 
 **Файл:** `k6/tests/custom-metric/custom-metric-demo.js`
 
-- `Counter('my_counter')` → в Prometheus: `k6_my_counter{testid="custom-metric"}`
+- `Counter('my_counter')` → в Prometheus: `k6_my_counter_total{testid="custom-metric"}` (префикс `k6_` + суффикс `_total` у counter)
 - Каждая итерация: HTTP + `myCounter.add(1)`
 
 PromQL:
 
 ```promql
-k6_my_counter{testid="custom-metric"}
+k6_my_counter_total{testid="custom-metric"}
 ```
 
 Команда запуска — **п. 9** в разделе [Запуск из терминала](#запуск-из-терминала).

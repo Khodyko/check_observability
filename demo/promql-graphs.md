@@ -48,7 +48,7 @@ sum(rate(http_server_requests_seconds_count{job="k6-test-app", status=~"5.."}[1m
 ## Кастомная метрика k6
 
 ```promql
-k6_my_counter{testid="custom-metric"}
+k6_my_counter_total{testid="custom-metric"}
 ```
 
 ## Проверка scrape Spring
