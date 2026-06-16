@@ -177,7 +177,3 @@ lab/
 │   └── alertmanager.yml     # route → telegram; секреты из .env
 └── ubuntu-host/Dockerfile   # Ubuntu 22.04 + node_exporter + stress-ng
 ```
-
-### Фаза 2 (планируется)
-
-`order-service` + PostgreSQL + `postgres_exporter`; HTTP-rules в тот же `alerts.yml`. Настройка вместе со Spring — см. [docs/practical-scenarios.md](../docs/practical-scenarios.md).

@@ -8,12 +8,7 @@ import { BASE_URL, POST_PARAMS } from './common.js';
 export const options = {
   tags: { testid: __ENV.TESTID || 'stress' },
   stages: [
-    { duration: '1m', target: 10 },
-    { duration: '1m', target: 20 },
-    { duration: '1m', target: 30 },
-    { duration: '1m', target: 40 },
-    { duration: '1m', target: 50 },
-    { duration: '1m', target: 60 },
+    { duration: '6h', target: 900 },
   ],
   thresholds: {
     http_req_duration: ['p(95)<15000'],

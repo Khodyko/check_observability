@@ -64,7 +64,7 @@ k6 run -o experimental-prometheus-rw simple.js
 
 ## k6 — практикум
 
-Скрипты в `k6/tests/`. Целевое приложение — API [k6-test-me](https://github.com/EvgeniErmakov/k6-test-me) (аналог в `app/`).
+Скрипты в `k6/tests/`.
 
 ### Переменные окружения
 

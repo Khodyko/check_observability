@@ -1306,7 +1306,7 @@ Alert: `job:order_service:http_errors:rate5m > 0.05`. Запомнить: **reco
 
 **На лекции:** после Firing — AM UI **и** сообщение в Telegram. Бот создаётся у **@BotFather** (`/newbot`); **код писать не нужно** — Alertmanager сам вызывает Bot API.
 
-Секреты — в `lab/.env` (не в git); шаблон [lab/.env.example](../lab/.env.example). В [alertmanager.yml](../lab/prometheus/alertmanager.yml) — плейсхолдеры, compose подставляет при старте.
+Секреты — в `lab/.env` (не в git); шаблон [lab/.env.example](../lab/.env). В [alertmanager.yml](../lab/prometheus/alertmanager.yml) — плейсхолдеры, compose подставляет при старте.
 
 ```yaml
 # alertmanager.yml (фрагмент)
