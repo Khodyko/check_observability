@@ -10,6 +10,8 @@
 | [docs/1860_rev45.json](docs/1860_rev45.json) | Экспорт дашборда Grafana (Node Exporter Full) |
 | [lab/](lab/) | Учебный стенд (пример 1): Prometheus, Alertmanager, Node Exporter |
 | [demo/](demo/) | Пример 2: k6 + Spring Boot + Prometheus (scrape + push) + Grafana |
+| [homework/HOMEWORK.md](homework/HOMEWORK.md) | Домашка: Spring + Postgres + Grafana руками + k6 |
+| [homework/ANSWERS.md](homework/ANSWERS.md) | Ответы: PromQL, стенд, нагрузка |
 
 ### Оглавление спича
 
