@@ -14,8 +14,10 @@
 
 ```bash
 cd lab
-docker compose up -d --build
+./scripts/compose.sh up -d --build
 ```
+
+Скрипт `scripts/compose.sh` — обёртка над `docker compose`: при **отсутствии** `.env` копирует `.env.example`; уже существующий `.env` **не трогает**.
 
 ### Проверка после старта (блоки 1–5)
 
@@ -44,10 +46,15 @@ job:lab_host_node:node_cpu_idle:rate1m
 
 ### Telegram (блок 6)
 
+1. `./scripts/compose.sh up -d` (если `.env` ещё нет — появится из `.env.example`).
+2. **Один раз** отредактируй `lab/.env`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+3. После правки секретов:
+
 ```bash
-cp .env.example .env   # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-docker compose up -d alertmanager
+./scripts/compose.sh up -d --force-recreate alertmanager
 ```
+
+Не используй `cp .env.example .env` — он затирает уже заполненный файл. Для стенда всегда `./scripts/compose.sh`, не голый `docker compose`.
 
 Бот (@BotFather) **в группе**. Проверка:
 
@@ -168,7 +175,8 @@ docker compose down -v
 
 ```text
 lab/
-├── .env.example              # шаблон Telegram (скопировать в .env)
+├── scripts/compose.sh       # docker compose; .env создаётся один раз из example
+├── .env.example              # шаблон Telegram
 ├── docker-compose.yml
 ├── prometheus/
 │   ├── prometheus.yml       # scrape + rule_files + alerting

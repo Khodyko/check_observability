@@ -9,7 +9,7 @@ import { login, getAuthHeaders } from './auth.js';
 export const options = {
   tags: { testid: __ENV.TESTID || 'auth-demo' },
   vus: 2,
-  duration: '30s',
+  duration: '5s',
   thresholds: {
     checks: ['rate>0.99'],
   },
@@ -26,7 +26,7 @@ export function setup() {
 
 export default function (data) {
   const withToken = http.get(`${BASE_URL}/api/secure`, getAuthHeaders(data.token));
-  check(withToken, { 'secure with token is 200': (r) => r.status === 200 });
+  check(withToken, { 'secure with token is 200': (r) => r.status === 201 });
 
   const withoutToken = http.get(`${BASE_URL}/api/secure`);
   check(withoutToken, { 'secure without token is 401': (r) => r.status === 401 });

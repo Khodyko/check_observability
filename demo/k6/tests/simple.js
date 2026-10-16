@@ -11,6 +11,6 @@ export const options = {
 };
 
 export default function () {
-  http.get(`http://localhost:8080/api/fast?mode=3`);
+  http.get(`http://localhost:8080/api/fast?mode=1`);
   sleep(1);
 }
